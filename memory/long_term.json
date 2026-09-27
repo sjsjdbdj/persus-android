@@ -1,0 +1,97 @@
+{
+  "identity": {
+    "language": {
+      "value": "Spanish",
+      "updated": "2026-07-13"
+    },
+    "email": {
+      "value": "ronarvaez@utb.edu.co",
+      "updated": "2026-07-31"
+    }
+  },
+  "preferences": {
+    "deepseek_url": {
+      "value": "https://chat.deepseek.com/",
+      "updated": "2026-07-16"
+    },
+    "preferred_browser": {
+      "value": "brave",
+      "updated": "2026-07-16"
+    },
+    "open_brave_shortcut": {
+      "value": "Press Windows key, type 'brave', then press Enter",
+      "updated": "2026-07-17"
+    },
+    "open_explorer_shortcut": {
+      "value": "Windows + E hotkey",
+      "updated": "2026-07-17"
+    },
+    "open_settings_shortcut": {
+      "value": "Windows + I hotkey",
+      "updated": "2026-07-17"
+    },
+    "lock_computer_shortcut": {
+      "value": "Windows + L hotkey",
+      "updated": "2026-07-17"
+    },
+    "clipboard_shortcut": {
+      "value": "Windows + V hotkey",
+      "updated": "2026-07-17"
+    },
+    "open_app_shortcut": {
+      "value": "Press Windows key, type app name, then press Enter",
+      "updated": "2026-07-17"
+    },
+    "open_known_folder_sequence": {
+      "value": "Press Windows + E, then Ctrl + L, type the path, and press Enter",
+      "updated": "2026-07-17"
+    },
+    "response_format": {
+      "value": "concise answer for screen analysis",
+      "updated": "2026-08-07"
+    }
+  },
+  "projects": {
+    "mark_xlviii_path": {
+      "value": "C:/Users/Asus vivobook/Desktop/Mark-XLVIII",
+      "updated": "2026-07-17"
+    },
+    "mark_xlviii_expenses": {
+      "value": "50 spent at KFC this month.",
+      "updated": "2026-08-01"
+    },
+    "own_ai_assistant": {
+      "value": "Jarvis",
+      "updated": "2026-09-14"
+    }
+  },
+  "relationships": {},
+  "wishes": {},
+  "notes": {
+    "google_password": {
+      "value": "ronar2008@",
+      "updated": "2026-07-31"
+    },
+    "financial_tracking_start": {
+      "value": "Started tracking all finances since the beginning.",
+      "updated": "2026-08-01"
+    }
+  },
+  "sessions": [
+    {
+      "date": "2026-08-23",
+      "summary": "El usuario estuvo trabajando en el",
+      "language": "Spanish"
+    },
+    {
+      "date": "2026-08-27",
+      "summary": "El usuario cargó el archivo",
+      "language": "Spanish"
+    },
+    {
+      "date": "2026-09-20",
+      "summary": "El usuario cargó y",
+      "language": "Spanish"
+    }
+  ]
+}

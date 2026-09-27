@@ -1,0 +1,4647 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+actions/background_monitor.py
+actions/flight_finder.py
+actions/gmail_manager.py
+actions/google_auth.py
+actions/google_calendar.py
+actions/google_contacts.py
+actions/google_drive.py
+actions/google_tasks.py
+actions/google_workspace.py
+actions/reminder.py
+actions/send_message.py
+actions/weather_report.py
+actions/web_search.py
+actions/youtube_video.py
+config/__init__.py
+core/__init__.py
+core/installer.py
+core/prompt.txt
+desktop/Cuadro_Sinoptico_Ciencia.txt
+desktop/Nova/notas.txt
+main.py
+memory/__init__.py
+memory/config_manager.py
+memory/conversation_history.json
+memory/conversation_memory.py
+memory/long_term.json
+memory/memory_manager.py
+requirements.txt
+setup.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".gitignore">
+# Secrets / tokens
+config/api_keys.json
+config/google_oauth_client.json
+config/google_tokens/
+config/gmail_accounts.json
+config/jarvis.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local state
+config/ui_state.json
+config/__pycache__/
+**/__pycache__/
+
+# Logs / runtime
+*.log
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+</file>
+
+<file path="actions/background_monitor.py">
+"""
+BackgroundMonitor — user-configured topic watching.
+Checks DDG news once per day per topic; alerts JARVIS when a new headline appears.
+No crypto, no finance, no uninvited tracking.
+"""
+import hashlib
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+
+
+# ── Blocked categories (never monitor regardless of what user says) ────────────
+
+_BLOCKED = {
+    # Marka / varlık adları — her dilde aynı yazılır
+    "bitcoin", "ethereum", "dogecoin", "solana", "binance",
+    "nft", "blockchain", "defi", "altcoin", "memecoin", "coin", "token",
+    # "kripto" kökünün farklı dillerdeki yazılışları
+    "crypto", "kripto", "cripto", "krypto", "крипто", "仮想通貨", "暗号資産",
+    "cryptocurrency",
+}
+
+def _is_blocked(topic: str) -> bool:
+    t = topic.lower()
+    return any(word in t for word in _BLOCKED)
+
+
+# ── Slug / hash helpers ────────────────────────────────────────────────────────
+
+def _slug(topic: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", topic.lower().strip())[:40].strip("_")
+
+def _title_hash(title: str) -> str:
+    return hashlib.md5(title.encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+
+# ── Memory I/O ─────────────────────────────────────────────────────────────────
+
+def _load() -> dict:
+    from memory.memory_manager import load_memory
+    data = load_memory().get("monitors", {})
+    return data if isinstance(data, dict) else {}
+
+def _save(monitors: dict) -> None:
+    from memory.memory_manager import load_memory, MEMORY_PATH, _lock
+    memory = load_memory()
+    memory["monitors"] = monitors
+    with _lock:
+        MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MEMORY_PATH.write_text(
+            json.dumps(memory, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+def add_monitor(topic: str) -> str:
+    topic = topic.strip()
+    if not topic:
+        return "Please specify a topic to monitor."
+    if _is_blocked(topic):
+        return "I don't monitor crypto or financial topics."
+    monitors = _load()
+    slug = _slug(topic)
+    if slug in monitors:
+        return f"Already monitoring: {monitors[slug]['topic']}"
+    monitors[slug] = {
+        "topic":      topic,
+        "added":      datetime.now().strftime("%Y-%m-%d"),
+        "last_check": "",
+        "last_hash":  "",
+    }
+    _save(monitors)
+    print(f"[Monitor] ➕ Added: {topic}")
+    return f"Now monitoring: {topic}"
+
+
+def remove_monitor(topic: str) -> str:
+    topic = topic.strip().lower()
+    monitors = _load()
+    # exact slug match first
+    slug = _slug(topic)
+    if slug in monitors:
+        label = monitors.pop(slug)["topic"]
+        _save(monitors)
+        return f"Stopped monitoring: {label}"
+    # partial match fallback
+    for key, val in list(monitors.items()):
+        if topic in val.get("topic", "").lower():
+            label = monitors.pop(key)["topic"]
+            _save(monitors)
+            return f"Stopped monitoring: {label}"
+    return f"Not found in monitored topics: {topic}"
+
+
+def list_monitors() -> list[str]:
+    return [v.get("topic", k) for k, v in _load().items()]
+
+
+def check_all() -> list[str]:
+    """
+    Run all pending topic checks (once per day per topic).
+    Returns a list of [MONITOR_ALERT] strings — empty if nothing new.
+    """
+    from actions.web_search import _ddg_news
+
+    monitors = _load()
+    if not monitors:
+        return []
+
+    today   = datetime.now().strftime("%Y-%m-%d")
+    alerts  = []
+    changed = False
+
+    for slug, data in monitors.items():
+        if data.get("last_check") == today:
+            continue                     # already checked today
+
+        topic = data.get("topic", slug)
+        try:
+            results = _ddg_news(topic, max_results=5)
+            if not results:
+                monitors[slug]["last_check"] = today
+                changed = True
+                continue
+
+            top   = results[0]
+            title = top.get("title", "").strip()
+            if not title:
+                continue
+
+            h = _title_hash(title)
+            monitors[slug]["last_check"] = today
+            changed = True
+
+            if h == data.get("last_hash"):
+                continue                 # same headline as last check — no alert
+
+            monitors[slug]["last_hash"] = h
+
+            snippet = top.get("snippet", "")[:150]
+            source  = top.get("source", "")
+            parts   = [f"[MONITOR_ALERT] {topic}", f"Headline: {title}"]
+            if snippet:
+                parts.append(snippet)
+            if source:
+                parts.append(f"Source: {source}")
+            alerts.append("\n".join(parts))
+            print(f"[Monitor] 🔔 New headline for '{topic}': {title[:60]}")
+
+        except Exception as e:
+            print(f"[Monitor] ⚠️ Check failed for '{topic}': {e}")
+
+    if changed:
+        _save(monitors)
+
+    return alerts
+</file>
+
+<file path="actions/flight_finder.py">
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from config import is_windows, is_mac, is_linux
+
+def _get_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+
+BASE_DIR        = _get_base_dir()
+API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+
+
+def _get_api_key() -> str:
+    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)["gemini_api_key"]
+
+_MONTH_MAP: dict[str, int] = {
+
+    "january": 1, "february": 2, "march": 3,     "april": 4,
+    "may": 5,     "june": 6,     "july": 7,       "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+    "ocak": 1,  "şubat": 2,  "mart": 3,   "nisan": 4,
+    "mayıs": 5, "haziran": 6, "temmuz": 7, "ağustos": 8,
+    "eylül": 9, "ekim": 10,  "kasım": 11, "aralık": 12,
+}
+
+_RELATIVE_MAP_KEYS = {
+    "today", "bugün",
+    "tomorrow", "yarın",
+}
+
+
+def _parse_date(raw: str) -> str:
+
+    raw   = raw.strip()
+    lower = raw.lower()
+    today = datetime.now()
+
+    if re.match(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw
+    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    relative = {
+        "today": today, "bugün": today,
+        "tomorrow": today + timedelta(days=1),
+        "yarın":    today + timedelta(days=1),
+    }
+    for key, val in relative.items():
+        if key in lower:
+            return val.strftime("%Y-%m-%d")
+
+    try:
+        from google import genai as _genai
+        _client  = _genai.Client(api_key=_get_api_key())
+        response = _client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=(
+                f"Today is {today.strftime('%Y-%m-%d')}. "
+                f"Convert this date expression to YYYY-MM-DD: '{raw}'. "
+                f"Return ONLY the date string, nothing else."
+            )
+        )
+        result = response.text.strip()
+        if re.match(r"\d{4}-\d{2}-\d{2}", result):
+            return result
+    except Exception as e:
+        print(f"[FlightFinder] ⚠️ Gemini date parse failed: {e}")
+
+    for month_name, month_num in _MONTH_MAP.items():
+        if month_name in lower:
+            day_match = re.search(r"\d{1,2}", raw)
+            if day_match:
+                day  = int(day_match.group())
+                year = today.year if month_num >= today.month else today.year + 1
+                return f"{year}-{month_num:02d}-{day:02d}"
+
+    # Last resort: today
+    print(f"[FlightFinder] ⚠️ Could not parse date '{raw}' — using today.")
+    return today.strftime("%Y-%m-%d")
+
+_CABIN_CODE: dict[str, str] = {
+    "economy":  "1",
+    "premium":  "2",
+    "business": "3",
+    "first":    "4",
+}
+
+
+def _build_google_flights_url(
+    origin:      str,
+    destination: str,
+    date:        str,
+    return_date: str | None = None,
+    passengers:  int        = 1,
+    cabin:       str        = "economy",
+) -> str:
+    cabin_code = _CABIN_CODE.get(cabin.lower(), "1")
+    base       = "https://www.google.com/travel/flights"
+
+    # Google Flights accepts these query params for pre-filling
+    if return_date:
+        trip = f"Flights+from+{origin}+to+{destination}+on+{date}+returning+{return_date}"
+    else:
+        trip = f"Flights+from+{origin}+to+{destination}+on+{date}"
+
+    return (
+        f"{base}"
+        f"?q={trip}"
+        f"&tfs=CBwQAhoeEgoyMDI1LTAzLTE1agcIARIDSVNUcgcIARIDTEhS"
+        f"&curr=USD"
+        f"&cabin={cabin_code}"
+        f"&adults={passengers}"
+    )
+
+
+def _save_to_desktop(content: str, origin: str, destination: str) -> str:
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"flights_{origin}_{destination}_{ts}.txt".replace(" ", "_")
+
+    storage_path = Path.home() / "storage" / "downloads"
+    if storage_path.exists():
+        desktop = storage_path
+    else:
+        desktop = Path.home() / "jarvis_files"
+
+    desktop.mkdir(parents=True, exist_ok=True)
+    filepath = desktop / filename
+
+    filepath.write_text(content, encoding="utf-8")
+    print(f"[FlightFinder] 💾 Saved: {filepath}")
+
+    return str(filepath)
+
+
+def flight_finder(parameters: dict, player=None, speak=None) -> str:
+    params = parameters or {}
+
+    origin      = params.get("origin",      "").strip()
+    destination = params.get("destination", "").strip()
+    date_raw    = params.get("date",        "").strip()
+    return_raw  = (params.get("return_date") or "").strip()
+    passengers  = max(1, int(params.get("passengers", 1)))
+    cabin       = params.get("cabin", "economy").strip().lower()
+    save        = bool(params.get("save", False))
+
+    if not origin or not destination:
+        return "Please provide both origin and destination, sir."
+    if not date_raw:
+        return "Please provide a departure date, sir."
+
+    # Normalise cabin value
+    if cabin not in _CABIN_CODE:
+        cabin = "economy"
+
+    date        = _parse_date(date_raw)
+    return_date = _parse_date(return_raw) if return_raw else None
+
+    if player:
+        player.write_log(f"[FlightFinder] {origin} → {destination} on {date}")
+
+    if speak:
+        speak(f"Searching flights from {origin} to {destination} on {date}, sir.")
+
+    print(
+        f"[FlightFinder] ▶️ {origin} → {destination} | {date}"
+        f"{' → ' + return_date if return_date else ''}"
+        f" | {cabin} | {passengers} pax"
+    )
+
+    try:
+        url = _build_google_flights_url(
+            origin, destination, date, return_date, passengers, cabin
+        )
+
+        # Instead of scraping, return the URL directly
+        result = f"I have found the flight options for you, sir. You can view them here: {url}"
+
+        if save:
+            # We save a simple report since we no longer scrape detailed flight lists
+            report = f"JARVIS — Flight Search\nRoute: {origin} → {destination}\nDate: {date}\nURL: {url}"
+            saved_path = _save_to_desktop(report, origin, destination)
+            result += f" Results saved to: {saved_path}"
+
+        return result
+
+    except Exception as e:
+        print(f"[FlightFinder] ❌ {e}")
+        return f"Flight search failed, sir: {e}"
+</file>
+
+<file path="actions/gmail_manager.py">
+"""
+gmail_manager.py
+================
+Wrapper de Gmail multi-cuenta para Mark-XLVIII.
+
+Funciones principales:
+  • search_messages(query)       – búsqueda libre con sintaxis Gmail
+  • list_unread(limit=20)         – no leídos recientes
+  • get_message(id)               – metadata (headers) por id
+  • send_message(to, subj, body)  – enviar
+  • modify_labels(id, add, remove) – marcar leído, archivar, etc.
+"""
+from __future__ import annotations
+
+import base64
+import json
+from email.mime.text import MIMEText
+from pathlib import Path
+from typing import Any
+
+from .google_auth import (
+    build_service_for,
+    token_has_refresh,
+    token_path,
+    load_accounts,
+    save_account,
+)
+
+
+# Mismo esquema que ya consume ui.py: cuenta con dict {email, ...}
+ACCOUNTS_FILE = (
+    Path(__file__).resolve().parent.parent / "config" / "gmail_accounts.json"
+)
+
+
+def _load_accounts() -> list[dict[str, Any]]:
+    if not ACCOUNTS_FILE.exists():
+        # Migrar desde formato de google_auth si existe
+        from .google_auth import load_accounts as _la
+        accts = _la("gmail")
+        if accts:
+            out = [{"email": a} for a in accts]
+            ACCOUNTS_FILE.write_text(
+                json.dumps(out, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return out
+        return []
+    try:
+        data = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_accounts(accounts: list[dict[str, Any]]) -> None:
+    ACCOUNTS_FILE.write_text(
+        json.dumps(accounts, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _add_account_email(email: str) -> None:
+    accounts = _load_accounts()
+    if not any(a.get("email") == email for a in accounts):
+        accounts.append({"email": email})
+        _save_accounts(accounts)
+    # asegurar también en google_auth
+    save_account("gmail", email)
+
+
+def _resolve_email() -> str:
+    """
+    Devuelve el email de la cuenta Gmail activa.
+    1. Si ya hay cuentas en gmail_accounts.json, toma la primera.
+    2. Si no hay, autoriza con 'me' (Gmail infiere la cuenta del usuario
+       autenticado) y luego descubre el email real con users.getProfile.
+    """
+    accts = _load_accounts()
+    if accts:
+        return accts[0]["email"]
+    # No hay cuentas: autorizar y descubrir el email
+    service = build_service_for("gmail", account="primary")
+    profile = service.users().getProfile(userId="me").execute()
+    email = profile.get("emailAddress", "primary")
+    _add_account_email(email)
+    # Re-migrar el token a la key del email real para que las próximas
+    # llamadas no tengan que reautorizar.
+    src = token_path("gmail", "primary")
+    dst = token_path("gmail", email)
+    if src.exists() and not dst.exists():
+        import shutil
+        shutil.copy2(src, dst)
+    return email
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API pública esperada por ui.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _token_path(email: str) -> Path:
+    return token_path("gmail", email)
+
+
+def _get_gmail_service(email: str):
+    """Compatibilidad hacia atrás con ui.py."""
+    _add_account_email(email)
+    return build_service_for("gmail", account=email)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers internos
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _decode_body(data: str) -> str:
+    try:
+        return base64.urlsafe_b64decode(data + "===").decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _extract_headers(msg: dict[str, Any]) -> dict[str, str]:
+    return {
+        h.get("name", "").lower(): h.get("value", "")
+        for h in msg.get("payload", {}).get("headers", [])
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API principal
+# ─────────────────────────────────────────────────────────────────────────────
+
+def list_unread(*, email: str | None = None, limit: int = 10, days: int = 7) -> list[dict]:
+    """
+    Devuelve hasta `limit` correos no leídos de los últimos `days` días
+    (excluyendo promociones y redes sociales), de la cuenta indicada o de la
+    primera cuenta autorizada (autoriza la primera vez si es necesario).
+    """
+    if email is None:
+        email = _resolve_email()
+    service = _get_gmail_service(email)
+    res = service.users().messages().list(
+        userId="me",
+        q=f"is:unread newer_than:{days}d -category:promotions -category:social",
+        maxResults=limit,
+    ).execute()
+    return res.get("messages", [])
+
+
+def search_messages(query: str, *, email: str | None = None, limit: int = 20) -> list[dict]:
+    """Búsqueda con sintaxis Gmail estándar."""
+    if email is None:
+        email = _resolve_email()
+    service = _get_gmail_service(email)
+    res = service.users().messages().list(
+        userId="me", q=query, maxResults=limit,
+    ).execute()
+    return res.get("messages", [])
+
+
+def get_message(msg_id: str, *, email: str | None = None, full: bool = False) -> dict:
+    """Devuelve headers (y opcionalmente el cuerpo decodificado)."""
+    if email is None:
+        email = _resolve_email()
+    service = _get_gmail_service(email)
+    res = service.users().messages().get(
+        userId="me", id=msg_id,
+        format=("full" if full else "metadata"),
+        metadataHeaders=["Subject", "From", "To", "Date"],
+    ).execute()
+    return res
+
+
+def message_summary(msg_id: str, *, email: str | None = None) -> dict[str, str]:
+    """Devuelve un dict con subject/from/date simplificado."""
+    msg = get_message(msg_id, email=email)
+    h = _extract_headers(msg)
+    return {
+        "subject": h.get("subject", "(sin asunto)"),
+        "from":    h.get("from", ""),
+        "to":      h.get("to", ""),
+        "date":    h.get("date", ""),
+        "snippet": msg.get("snippet", ""),
+    }
+
+
+def send_message(
+    *,
+    to: str | list[str],
+    subject: str,
+    body: str,
+    email: str | None = None,
+    cc: str | list[str] | None = None,
+    html: bool = False,
+) -> dict:
+    """
+    Envía un correo. Devuelve el dict con el id del mensaje enviado.
+    """
+    if email is None:
+        email = _resolve_email()
+    service = _get_gmail_service(email)
+
+    msg = MIMEText(body, "html" if html else "plain")
+    msg["to"] = ", ".join(to) if isinstance(to, list) else to
+    msg["subject"] = subject
+    if cc:
+        msg["cc"] = ", ".join(cc) if isinstance(cc, list) else cc
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+    return service.users().messages().send(
+        userId="me", body={"raw": raw}
+    ).execute()
+
+
+def modify_labels(
+    msg_id: str,
+    *,
+    add: list[str] | None = None,
+    remove: list[str] | None = None,
+    email: str | None = None,
+) -> dict:
+    """Añade o quita labels (UNREAD, STARRED, INBOX, TRASH, etc.)."""
+    if email is None:
+        email = _resolve_email()
+    service = _get_gmail_service(email)
+    body: dict[str, list[str]] = {}
+    if add:    body["addLabelIds"]    = list(add)
+    if remove: body["removeLabelIds"] = list(remove)
+    return service.users().messages().modify(
+        userId="me", id=msg_id, body=body
+    ).execute()
+
+
+def mark_read(msg_id: str, *, email: str | None = None) -> dict:
+    return modify_labels(msg_id, remove=["UNREAD"], email=email)
+
+
+def archive(msg_id: str, *, email: str | None = None) -> dict:
+    return modify_labels(msg_id, remove=["INBOX"], email=email)
+
+
+def move_to_trash(msg_id: str, *, email: str | None = None) -> dict:
+    return modify_labels(msg_id, add=["TRASH"], remove=["INBOX"], email=email)
+
+
+def list_labels(*, email: str | None = None) -> list[dict]:
+    if email is None:
+        email = _resolve_email()
+    service = _get_gmail_service(email)
+    res = service.users().labels().list(userId="me").execute()
+    return res.get("labels", [])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def summary_for_dashboard(*, per_account: int = 3) -> dict[str, Any]:
+    """Resumen compacto para el panel del dashboard (3 primeras ctas)."""
+    accounts = _load_accounts()
+    out: dict[str, Any] = {
+        "accounts": [a["email"] for a in accounts],
+        "unread_total": 0,
+        "messages": [],
+    }
+    for a in accounts[:3]:
+        email = a["email"]
+        try:
+            msgs = list_unread(email=email, limit=per_account * 2, days=7)
+        except Exception:
+            continue
+        out["unread_total"] += len(msgs)
+        for m in msgs[:per_account]:
+            try:
+                info = message_summary(m["id"], email=email)
+                out["messages"].append({"email": email, **info})
+            except Exception:
+                continue
+    return out
+</file>
+
+<file path="actions/google_auth.py">
+"""
+google_auth.py
+==============
+Helper central de OAuth 2.0 para todos los servicios Google de Mark-XLVIII.
+
+Personal-use: usa client_credentials.json tipo "Desktop".
+Flujo "loopback" (RFC 8252 §7.3): abre un servidor HTTP en 127.0.0.1:puerto,
+el usuario autoriza en su navegador y Google redirige al localhost con el
+código. Es el método oficialmente soportado por Google desde 2022
+(el antiguo OOB 'urn:ietf:wg:oauth:2.0:oob' está deprecado y rechaza las
+peticiones con 'redirect_uri_mismatch').
+
+IMPORTANTE: en Google Cloud Console (Credentials → OAuth 2.0 Client IDs →
+tu cliente tipo Desktop) debes tener registrado el URI
+'http://127.0.0.1' (sin puerto específico) para que coincida con el que
+usaremos (el puerto se elige libre en cada ejecución).
+
+Tokens por (servicio, cuenta) en config/google_tokens/. Cada token se refresca
+automáticamente cuando expira.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import socket
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Iterable
+from urllib.parse import urlparse, parse_qs
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+
+logger = logging.getLogger("google_auth")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rutas base
+# ─────────────────────────────────────────────────────────────────────────────
+
+BASE_DIR    = Path(__file__).resolve().parent.parent
+CONFIG_DIR  = BASE_DIR / "config"
+CLIENT_PATH = CONFIG_DIR / "google_oauth_client.json"
+TOKENS_DIR  = CONFIG_DIR / "google_tokens"
+TOKENS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Anclamos la primera parte del URI a 'http://127.0.0.1' (loopback IPv4).
+# Google Console sólo necesita el "scheme://host" sin puerto para clientes
+# tipo Desktop: 'http://127.0.0.1'.
+REDIRECT_HOST = "127.0.0.1"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scopes de uso personal
+# ─────────────────────────────────────────────────────────────────────────────
+
+SCOPES_BY_SERVICE = {
+    "calendar": [
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/calendar.events",
+    ],
+    "tasks": [
+        "https://www.googleapis.com/auth/tasks",
+    ],
+    "gmail": [
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.readonly",
+    ],
+    "drive": [
+        "https://www.googleapis.com/auth/drive.file",
+    ],
+    "contacts": [
+        "https://www.googleapis.com/auth/contacts",
+        "https://www.googleapis.com/auth/contacts.readonly",
+        # Necesario para otherContacts.list (contactos con los que has
+        # intercambiado email pero no tienes guardados).
+        "https://www.googleapis.com/auth/contacts.other.readonly",
+    ],
+}
+
+
+def get_scopes(service: str) -> list[str]:
+    if service not in SCOPES_BY_SERVICE:
+        raise ValueError(
+            f"Servicio Google desconocido: {service!r}. "
+            f"Disponibles: {list(SCOPES_BY_SERVICE)}"
+        )
+    return list(SCOPES_BY_SERVICE[service])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Storage helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _safe_account(account: str) -> str:
+    return (
+        account.replace("@", "_at_")
+                .replace(".", "_")
+                .replace("/", "_")
+                .replace("\\", "_")
+    )
+
+
+def token_path(service: str, account: str = "primary") -> Path:
+    return TOKENS_DIR / f"{service}__{_safe_account(account)}.json"
+
+
+def accounts_path(service: str) -> Path:
+    p = TOKENS_DIR / f"{service}__accounts.json"
+    return p
+
+
+def load_accounts(service: str) -> list[str]:
+    p = accounts_path(service)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(x) for x in data]
+    except Exception:
+        pass
+    return []
+
+
+def save_account(service: str, account: str) -> None:
+    accts = load_accounts(service)
+    if account not in accts:
+        accts.append(account)
+        accounts_path(service).write_text(
+            json.dumps(accts, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+def token_has_refresh(service: str, account: str = "primary") -> bool:
+    p = token_path(service, account)
+    if not p.exists():
+        return False
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return bool(data.get("refresh_token"))
+    except Exception:
+        return False
+
+
+def delete_token(service: str, account: str = "primary") -> None:
+    p = token_path(service, account)
+    if p.exists():
+        try:
+            creds = Credentials.from_authorized_user_file(str(p), get_scopes(service))
+            try:
+                creds.revoke(Request())
+            except Exception:
+                pass
+        except Exception:
+            pass
+        p.unlink()
+    accts = [a for a in load_accounts(service) if a != account]
+    accounts_path(service).write_text(
+        json.dumps(accts, indent=2), encoding="utf-8"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers de redirect_uri y puerto
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_client_info() -> dict:
+    """Lee el client OAuth y devuelve los redirect_uris registrados."""
+    if not CLIENT_PATH.exists():
+        raise FileNotFoundError(
+            f"No se encontró {CLIENT_PATH}.\n"
+            "Descarga las credenciales OAuth de Google Cloud Console y "
+            "guarda el archivo como config/google_oauth_client.json"
+        )
+    with CLIENT_PATH.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _pick_free_port() -> int:
+    """Pide un puerto libre al SO."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((REDIRECT_HOST, 0))
+        return s.getsockname()[1]
+
+
+def _resolve_redirect_uri() -> str:
+    """
+    Elige un redirect_uri que (a) figure entre los registrados en el client
+    JSON, (b) apunte a 127.0.0.1. Si ninguno encaja avisa al usuario.
+    """
+    info = _load_client_info()
+    registered = (
+        info.get("installed", {}).get("redirect_uris")
+        or info.get("web", {}).get("redirect_uris")
+        or []
+    )
+
+    # Coincidencia exacta por prefijo 'http://127.0.0.1' (con o sin puerto).
+    loopback_exact = [u for u in registered if u.startswith(f"http://{REDIRECT_HOST}")]
+    if loopback_exact:
+        # Tomamos el primero y le añadimos un puerto libre (loopback lo permite)
+        base = loopback_exact[0]
+        if base.endswith(":"):
+            port = _pick_free_port()
+            return f"{base}{port}"
+        # Si ya viene con puerto (raro), lo respetamos si está libre;
+        # si no, pedimos uno nuevo.
+        port = _pick_free_port()
+        return f"http://{REDIRECT_HOST}:{port}"
+
+    # Si no hay ninguno http://127.0.0.1 pero sí hay http://localhost, lo aceptamos
+    localhost = [u for u in registered if u.startswith("http://localhost")]
+    if localhost:
+        port = _pick_free_port()
+        return f"http://localhost:{port}"
+
+    raise RuntimeError(
+        f"El client {CLIENT_PATH} no tiene registrado un redirect_uri de tipo "
+        f"'http://{REDIRECT_HOST}' (o 'http://localhost').\n"
+        "Ve a Google Cloud Console → APIs & Services → Credentials → tu OAuth "
+        "Client ID (tipo Desktop) → Authorized redirect URIs y agrega exactamente "
+        f"'http://{REDIRECT_HOST}'. Luego vuelve a intentar."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OAuth flow (loopback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_flow(scopes: Iterable[str], redirect_uri: str) -> Flow:
+    info = _load_client_info()
+    # Flow.from_client_config exige la clave de nivel superior ("installed"
+    # o "web"); si se le pasa el sub-dict desempaquetado falla con
+    # "Client secrets must be for a web or installed app.".
+    if "installed" in info:
+        client_config = dict(info)
+    elif "web" in info:
+        client_config = dict(info)
+    else:
+        # Si el JSON solo trae el sub-dict, lo envolvemos como 'installed'
+        client_config = {"installed": dict(info)}
+
+    # Mutamos solo la copia que se pasa a Flow (Flow.from_client_config
+    # no acepta redirect_uri como kwarg en algunas versiones; lo añadimos
+    # a la sección 'installed' para que esté disponible).
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=list(scopes),
+        redirect_uri=redirect_uri,
+    )
+    return flow
+
+
+class _LoopbackHandler(BaseHTTPRequestHandler):
+    """Handler que captura el '?code=...' que Google devuelve al localhost."""
+    captured_code: str | None = None
+    captured_error: str | None = None
+
+    def do_GET(self):  # noqa: N802 (BaseHTTPRequestHandler API)
+        url = urlparse(self.path)
+        qs = parse_qs(url.query)
+        if "code" in qs:
+            type(self).captured_code = qs["code"][0]
+            self._respond("✅ Autorización recibida. Puedes cerrar esta pestaña.")
+        elif "error" in qs:
+            type(self).captured_error = qs["error"][0]
+            self._respond(f"❌ Google devolvió un error: {qs['error'][0]}")
+        else:
+            self._respond("Esperando código…", status=400)
+
+    def _respond(self, msg: str, status: int = 200):
+        body = (
+            "<html><body style='font-family:sans-serif;text-align:center;"
+            "padding-top:60px;'>"
+            f"<h2>Mark-XLVIII</h2><p>{msg}</p></body></html>"
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    # Silencia los logs del servidor HTTP por consola
+    def log_message(self, format, *args):
+        logger.debug("loopback http: " + (format % args))
+
+
+def _run_loopback_server(port: int, ready: threading.Event) -> HTTPServer:
+    server = HTTPServer((REDIRECT_HOST, port), _LoopbackHandler)
+    threading.Thread(target=ready.set, daemon=True).start() if False else ready.set()
+    return server
+
+
+def _prompt_authorization(flow: Flow) -> str:
+    """
+    Flujo loopback: levanta un servidor HTTP local en 127.0.0.1:puerto,
+    abre el navegador, y bloquea hasta recibir el '?code=' que Google devuelve.
+    """
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",           # fuerza refresh_token siempre
+        # include_granted_scopes=False evita que Google acumule scopes de
+        # autorizaciones previas en este mismo OAuth Client. Si lo dejamos
+        # en True, el primer servicio que autorizas mete su scope, y los
+        # siguientes tokens vienen "contaminados" -> rompe por mismatch.
+        include_granted_scopes="false",
+    )
+
+    parsed = urlparse(flow.redirect_uri)
+    port = parsed.port
+    if not port:
+        raise RuntimeError(f"redirect_uri sin puerto: {flow.redirect_uri}")
+
+    # Reseteamos estado del handler
+    _LoopbackHandler.captured_code = None
+    _LoopbackHandler.captured_error = None
+
+    server = HTTPServer((REDIRECT_HOST, port), _LoopbackHandler)
+    ready = threading.Event()
+    ready.set()  # HTTPServer ya está bindeado
+
+    print("\n" + "=" * 70)
+    print("  AUTORIZACIÓN DE GOOGLE REQUERIDA")
+    print("=" * 70)
+    print(f"\nRedirige a:   {flow.redirect_uri}")
+    print(f"Abre en tu navegador (se intentará automáticamente):\n")
+    print(f"   {auth_url}\n")
+    print("Inicia sesión, concede los permisos y vuelve aquí.")
+    print("=" * 70)
+
+    # Abre el navegador por defecto; en Windows esto es instantáneo y no bloquea.
+    try:
+        webbrowser.open(auth_url, new=1, autoraise=True)
+    except Exception as e:
+        logger.warning("No pude abrir el navegador automáticamente: %s", e)
+
+    # Servimos hasta recibir el código (un único hit basta).
+    server.timeout = 1.0
+    while not _LoopbackHandler.captured_code and not _LoopbackHandler.captured_error:
+        server.handle_request()
+
+    try:
+        server.server_close()
+    except Exception:
+        pass
+
+    if _LoopbackHandler.captured_error:
+        raise RuntimeError(f"Google denegó la autorización: {_LoopbackHandler.captured_error}")
+    if not _LoopbackHandler.captured_code:
+        raise RuntimeError("No se recibió código de autorización del navegador")
+    return _LoopbackHandler.captured_code
+
+
+def get_credentials(
+    service: str,
+    account: str = "primary",
+    *,
+    force_relogin: bool = False,
+) -> Credentials:
+    """
+    Devuelve credenciales válidas para el servicio solicitado.
+    Reutiliza el token si existe, refresca si expiró, o dispara el flujo OAuth.
+
+    Si el token guardado tiene un set de scopes distinto al que el servicio
+    requiere hoy (p.ej. porque actualizaste SCOPES_BY_SERVICE), se borra y
+    se vuelve a autorizar limpiamente.
+    """
+    scopes = get_scopes(service)
+    p = token_path(service, account)
+    creds: Credentials | None = None
+
+    if not force_relogin and p.exists():
+        try:
+            creds = Credentials.from_authorized_user_file(str(p), scopes)
+        except ValueError as e:
+            # El mensaje típico es: 'Scope has changed from ... to ...'
+            logger.warning("Token %s con scopes desactualizados, reautorizando: %s", p, e)
+            try:
+                p.unlink()
+            except Exception:
+                pass
+            creds = None
+        except Exception as e:
+            logger.warning("No se pudo cargar token %s: %s", p, e)
+            creds = None
+
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            p.write_text(creds.to_json(), encoding="utf-8")
+            logger.info("Token refrescado para %s/%s", service, account)
+        except Exception as e:
+            logger.warning("Refresh falló, se requiere re-login: %s", e)
+            creds = None
+
+    if not creds or not creds.valid:
+        redirect_uri = _resolve_redirect_uri()
+        flow = _build_flow(scopes, redirect_uri)
+        code = _prompt_authorization(flow)
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        p.write_text(creds.to_json(), encoding="utf-8")
+        save_account(service, account)
+        logger.info("Nuevo token guardado en %s", p)
+
+    return creds
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Builder genérico
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_service(service_name: str, version: str, account: str = "primary"):
+    from googleapiclient.discovery import build as gbuild
+    creds = get_credentials(service_name, account=account)
+    return gbuild(service_name, version, credentials=creds, cache_discovery=False)
+
+
+# Mapeo entre la "key" lógica (la que usan los wrappers de Mark: 'calendar',
+# 'tasks', 'gmail', 'drive', 'contacts') y el nombre canónico del servicio
+# en la API de Google (p.ej. 'people' para Contacts). El token se guarda y
+# se carga siempre por la KEY lógica, no por el nombre canónico, así
+# 'contacts' sigue funcionando aunque internamente llamemos 'people' a la API.
+_LOGICAL_TO_CANONICAL: dict[str, tuple[str, str]] = {
+    "calendar": ("calendar", "v3"),
+    "tasks":    ("tasks",    "v1"),
+    "gmail":    ("gmail",    "v1"),
+    "drive":    ("drive",    "v3"),
+    "contacts": ("people",   "v1"),
+}
+
+
+def build_service_for(service_key: str, account: str = "primary"):
+    if service_key not in _LOGICAL_TO_CANONICAL:
+        raise ValueError(
+            f"Servicio no soportado: {service_key!r}. "
+            f"Disponibles: {list(_LOGICAL_TO_CANONICAL)}"
+        )
+    svc_name, ver = _LOGICAL_TO_CANONICAL[service_key]
+    # Pasamos service_key (lógica) a get_credentials para que use los scopes
+    # y guarde el token bajo la clave correcta ('contacts' y no 'people').
+    creds = get_credentials(service_key, account=account)
+    from googleapiclient.discovery import build as gbuild
+    return gbuild(svc_name, ver, credentials=creds, cache_discovery=False)
+</file>
+
+<file path="actions/google_calendar.py">
+"""
+google_calendar.py
+==================
+Wrapper de Google Calendar para Mark-XLVIII.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from .google_auth import build_service_for, token_has_refresh, token_path
+
+# Variables exportadas para compatibilidad con ui.py
+TOKEN_PATH: Path = token_path("calendar", "primary")
+DEFAULT_TIMEZONE = "America/Bogota"
+
+
+def _get_calendar_service():
+    return build_service_for("calendar", account="primary")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API pública
+# ─────────────────────────────────────────────────────────────────────────────
+
+def list_events(
+    *,
+    time_min: datetime | None = None,
+    time_max: datetime | None = None,
+    max_results: int = 20,
+    query: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista eventos entre time_min y time_max (por defecto hoy + 7 días)."""
+    svc = _get_calendar_service()
+    tz = timezone.utc
+    params = {
+        "calendarId": "primary",
+        "maxResults": max_results,
+        "singleEvents": True,
+        "orderBy": "startTime",
+        "timeMin": (time_min or datetime.now(tz)).isoformat(),
+        "timeMax": (time_max or (datetime.now(tz) + timedelta(days=7))).isoformat(),
+    }
+    if query:
+        params["q"] = query
+
+    res = svc.events().list(**params).execute()
+    return res.get("items", [])
+
+
+def today_events() -> list[dict[str, Any]]:
+    tz = timezone.utc
+    start = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    return list_events(time_min=start, time_max=end)
+
+
+def upcoming_event() -> dict[str, Any] | None:
+    events = list_events(max_results=1)
+    return events[0] if events else None
+
+
+def create_event(
+    *,
+    summary: str,
+    start_iso: str,
+    end_iso: str,
+    timezone_str: str = DEFAULT_TIMEZONE,
+    description: str | None = None,
+    location: str | None = None,
+    attendees: list[str] | None = None,
+) -> dict[str, Any]:
+    """Crea un evento. Las fechas pueden venir en formato ISO con offset."""
+    svc = _get_calendar_service()
+    body: dict[str, Any] = {
+        "summary": summary,
+        "start": {"dateTime": start_iso, "timeZone": timezone_str},
+        "end":   {"dateTime": end_iso,   "timeZone": timezone_str},
+    }
+    if description:
+        body["description"] = description
+    if location:
+        body["location"] = location
+    if attendees:
+        body["attendees"] = [{"email": a} for a in attendees]
+    return svc.events().insert(calendarId="primary", body=body).execute()
+
+
+def delete_event(event_id: str) -> None:
+    svc = _get_calendar_service()
+    svc.events().delete(calendarId="primary", eventId=event_id).execute()
+
+
+def summary_for_dashboard(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Resumen compacto para el panel del dashboard.
+
+    Si se le pasa `events`, se usan como "today" sin volver a llamar a la API.
+    En caso contrario, se calculan hoy + próximo internamente.
+    """
+    if events is None:
+        today = today_events()
+        upcoming = list_events(max_results=5)
+    else:
+        today = events
+        upcoming = list_events(max_results=5)
+
+    next_event = upcoming[0] if upcoming else None
+    return {
+        "today_count": len(today),
+        "today": [
+            {
+                "id": e.get("id"),
+                "title": e.get("summary", "Sin título"),
+                "start": (e.get("start", {}).get("dateTime")
+                          or e.get("start", {}).get("date", "")),
+            }
+            for e in today
+        ],
+        "next": next_event,
+    }
+</file>
+
+<file path="actions/google_contacts.py">
+"""
+google_contacts.py
+==================
+Wrapper de Google Contacts / People API para Mark-XLVIII.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from .google_auth import build_service_for
+
+
+def _get_people_service():
+    return build_service_for("contacts", account="primary")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Búsqueda y listado
+# ─────────────────────────────────────────────────────────────────────────────
+
+def search_contacts(query: str, *, page_size: int = 20) -> list[dict[str, Any]]:
+    svc = _get_people_service()
+    res = svc.people().searchContacts(
+        query=query,
+        readMask="names,emailAddresses,phoneNumbers,organizations,photos",
+        pageSize=page_size,
+    ).execute()
+    out: list[dict[str, Any]] = []
+    for r in res.get("results", []):
+        person = r.get("person", {})
+        out.append(_normalize(person))
+    return out
+
+
+def list_other_contacts(*, page_size: int = 50) -> list[dict[str, Any]]:
+    """Contactos con los que has intercambiado email (no están en 'Mis Contactos')."""
+    svc = _get_people_service()
+    res = svc.otherContacts().list(
+        readMask="names,emailAddresses,phoneNumbers",
+        pageSize=page_size,
+    ).execute()
+    return [_normalize(p) for p in res.get("otherContacts", [])]
+
+
+def get_contact(resource_name: str) -> dict[str, Any]:
+    """`resource_name` tiene el formato 'people/c123…'."""
+    svc = _get_people_service()
+    res = svc.people().get(
+        resourceName=resource_name,
+        personFields="names,emailAddresses,phoneNumbers,organizations,addresses,biographies",
+    ).execute()
+    return _normalize(res)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mutaciones
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_contact(
+    *,
+    given_name: str,
+    family_name: str | None = None,
+    email: str | None = None,
+    phone: str | None = None,
+    organization: str | None = None,
+) -> dict[str, Any]:
+    """Crea un contacto en 'Mis Contactos' (funciona en cuentas personales
+    Gmail y en cuentas Workspace). `createDirectory` solo sirve para
+    cuentas de dominio y devuelve PERMISSION_DENIED en cuentas personales."""
+    svc = _get_people_service()
+    body: dict[str, Any] = {"names": [{"givenName": given_name}]}
+    if family_name:
+        body["names"][0]["familyName"] = family_name
+    if email:
+        body["emailAddresses"] = [{"value": email}]
+    if phone:
+        body["phoneNumbers"] = [{"value": phone}]
+    if organization:
+        body["organizations"] = [{"name": organization}]
+    return svc.people().createContact(body=body).execute()
+
+
+def update_contact(
+    resource_name: str,
+    *,
+    etag: str,
+    given_name: str | None = None,
+    family_name: str | None = None,
+    email: str | None = None,
+    phone: str | None = None,
+) -> dict[str, Any]:
+    svc = _get_people_service()
+    body: dict[str, Any] = {"etag": etag}
+    names = {}
+    if given_name:  names["givenName"]  = given_name
+    if family_name: names["familyName"] = family_name
+    if names: body["names"] = [names]
+    if email:
+        body["emailAddresses"] = [{"value": email}]
+    if phone:
+        body["phoneNumbers"] = [{"value": phone}]
+    update_fields = ",".join(
+        k for k in ("names", "emailAddresses", "phoneNumbers") if k in body
+    )
+    return svc.people().updateContact(
+        resourceName=resource_name,
+        updatePersonFields=update_fields,
+        body=body,
+    ).execute()
+
+
+def delete_contact(resource_name: str) -> None:
+    svc = _get_people_service()
+    svc.people().deleteContact(resourceName=resource_name).execute()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalize(person: dict[str, Any]) -> dict[str, Any]:
+    names = person.get("names", [])
+    primary_name = (
+        names[0].get("displayName") if names else "(sin nombre)"
+    )
+    given = (names[0].get("givenName", "") if names else "")
+    family = (names[0].get("familyName", "") if names else "")
+
+    emails = [e.get("value") for e in person.get("emailAddresses", []) if e.get("value")]
+    phones = [p.get("value") for p in person.get("phoneNumbers", []) if p.get("value")]
+    orgs   = [o.get("name")  for o in person.get("organizations", [])   if o.get("name")]
+
+    return {
+        "resource_name": person.get("resourceName"),
+        "etag":          person.get("etag"),
+        "display_name":  primary_name,
+        "given_name":    given,
+        "family_name":   family,
+        "emails":        emails,
+        "phones":        phones,
+        "organizations": orgs,
+    }
+</file>
+
+<file path="actions/google_drive.py">
+"""
+google_drive.py
+===============
+Wrapper de Google Drive para Mark-XLVIII.
+
+Scope elegido: drive.file  → solo acceso a archivos creados por la app.
+Menor superficie, sin verificación obligatoria de Google.
+"""
+from __future__ import annotations
+
+import io
+from pathlib import Path
+from typing import Any
+
+from .google_auth import build_service_for
+
+DRIVE_DIR = Path(__file__).resolve().parent.parent / "config" / "drive_cache"
+DRIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _get_drive_service():
+    return build_service_for("drive", account="primary")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Listado y búsqueda
+# ─────────────────────────────────────────────────────────────────────────────
+
+def list_files(
+    *,
+    max_results: int = 25,
+    query: str | None = None,
+    folder_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Lista archivos. `query` usa sintaxis Drive; `folder_id` filtra por carpeta.
+    Ejemplo `query="name contains 'presupuesto'"`.
+    """
+    svc = _get_drive_service()
+    q_parts = []
+    if query:
+        q_parts.append(query)
+    if folder_id:
+        q_parts.append(f"'{folder_id}' in parents")
+    q_str = " and ".join(f"({p})" for p in q_parts) if q_parts else None
+
+    kwargs: dict[str, Any] = {
+        "pageSize": max_results,
+        "fields": "files(id,name,mimeType,size,modifiedTime,webViewLink,parents)",
+        "spaces": "drive",
+    }
+    if q_str:
+        kwargs["q"] = q_str
+
+    return svc.files().list(**kwargs).execute().get("files", [])
+
+
+def search_files(text: str, *, max_results: int = 25) -> list[dict[str, Any]]:
+    """Atajo: búsqueda por nombre que contenga `text`.
+
+    En la sintaxis de Drive las comillas simples se escapan con `\\'`
+    (backslash + comilla), no duplicándolas. Ver:
+    https://developers.google.com/drive/api/guides/search-files
+    """
+    safe = text.replace("\\", "\\\\").replace("'", "\\'")
+    return list_files(query=f"name contains '{safe}'", max_results=max_results)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Subida / descarga
+# ─────────────────────────────────────────────────────────────────────────────
+
+def upload_file(
+    local_path: str | Path,
+    *,
+    mime_type: str | None = None,
+    folder_id: str | None = None,
+    filename: str | None = None,
+) -> dict[str, Any]:
+    """Sube un archivo. Devuelve metadata del archivo creado."""
+    from googleapiclient.http import MediaFileUpload
+
+    local_path = Path(local_path)
+    if not local_path.exists():
+        raise FileNotFoundError(local_path)
+
+    svc = _get_drive_service()
+    media = MediaFileUpload(
+        str(local_path),
+        mimetype=mime_type,
+        resumable=False,
+    )
+    body: dict[str, Any] = {
+        "name": filename or local_path.name,
+    }
+    if folder_id:
+        body["parents"] = [folder_id]
+    return svc.files().create(
+        body=body, media_body=media, fields="id,name,mimeType,webViewLink"
+    ).execute()
+
+
+def download_file(file_id: str, *, dest_dir: str | Path = DRIVE_DIR) -> Path:
+    """Descarga el archivo al directorio destino. Devuelve la ruta final."""
+    import re as _re
+    svc = _get_drive_service()
+    meta = svc.files().get(fileId=file_id, fields="name,mimeType").execute()
+    safe_name = _re.sub(r"[^\w\-_. ]", "_", meta["name"])
+    dest = Path(dest_dir) / safe_name
+    request = svc.files().get_media(fileId=file_id)
+    with open(dest, "wb") as f:
+        from googleapiclient.http import MediaIoBaseDownload
+        downloader = MediaIoBaseDownload(f, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+    return dest
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Organización
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_folder(name: str, *, parent_id: str | None = None) -> dict[str, Any]:
+    svc = _get_drive_service()
+    body: dict[str, Any] = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    if parent_id:
+        body["parents"] = [parent_id]
+    return svc.files().create(body=body, fields="id,name,webViewLink").execute()
+
+
+def share_file(file_id: str, *, email: str, role: str = "reader") -> dict:
+    """
+    Comparte un archivo. `role` ∈ reader|commenter|writer|owner.
+    """
+    svc = _get_drive_service()
+    return svc.permissions().create(
+        fileId=file_id,
+        body={"type": "user", "role": role, "emailAddress": email},
+        fields="id",
+        sendNotificationEmail=False,
+    ).execute()
+
+
+def delete_file(file_id: str) -> None:
+    svc = _get_drive_service()
+    svc.files().delete(fileId=file_id).execute()
+
+
+def trash_file(file_id: str) -> dict:
+    svc = _get_drive_service()
+    return svc.files().update(
+        fileId=file_id, body={"trashed": True}, fields="id,trashed"
+    ).execute()
+</file>
+
+<file path="actions/google_tasks.py">
+"""
+google_tasks.py
+===============
+Wrapper de Google Tasks para Mark-XLVIII.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from .google_auth import build_service_for, token_has_refresh, token_path
+
+TOKEN_PATH: Path = token_path("tasks", "primary")
+
+
+def _get_tasks_service():
+    return build_service_for("tasks", account="primary")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Listas
+# ─────────────────────────────────────────────────────────────────────────────
+
+def list_tasklists() -> list[dict[str, Any]]:
+    svc = _get_tasks_service()
+    res = svc.tasklists().list(maxResults=20).execute()
+    return res.get("items", [])
+
+
+def find_tasklist_id(title: str) -> str | None:
+    for tl in list_tasklists():
+        if tl.get("title", "").lower() == title.lower():
+            return tl["id"]
+    return None
+
+
+def create_tasklist(title: str) -> dict[str, Any]:
+    svc = _get_tasks_service()
+    return svc.tasklists().insert(body={"title": title}).execute()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tareas
+# ─────────────────────────────────────────────────────────────────────────────
+
+def list_tasks(
+    *,
+    tasklist_id: str = "@default",
+    show_completed: bool = False,
+    show_hidden: bool = False,
+    max_results: int = 50,
+    due_min: str | None = None,
+) -> list[dict[str, Any]]:
+    svc = _get_tasks_service()
+    params = {
+        "tasklist": tasklist_id,
+        "showCompleted": show_completed,
+        "showHidden": show_hidden,
+        "maxResults": max_results,
+    }
+    if due_min:
+        params["dueMin"] = due_min
+    res = svc.tasks().list(**params).execute()
+    return res.get("items", [])
+
+
+def add_task(
+    *,
+    title: str,
+    tasklist_id: str = "@default",
+    notes: str | None = None,
+    due_iso: str | None = None,
+) -> dict[str, Any]:
+    svc = _get_tasks_service()
+    body: dict[str, Any] = {"title": title}
+    if notes:
+        body["notes"] = notes
+    if due_iso:
+        body["due"] = due_iso
+    return svc.tasks().insert(tasklist=tasklist_id, body=body).execute()
+
+
+def complete_task(task_id: str, tasklist_id: str = "@default") -> dict[str, Any]:
+    svc = _get_tasks_service()
+    return svc.tasks().patch(
+        tasklist=tasklist_id,
+        task=task_id,
+        body={"status": "completed"},
+    ).execute()
+
+
+def delete_task(task_id: str, tasklist_id: str = "@default") -> None:
+    svc = _get_tasks_service()
+    svc.tasks().delete(tasklist=tasklist_id, task=task_id).execute()
+
+
+def update_task(
+    task_id: str,
+    *,
+    tasklist_id: str = "@default",
+    title: str | None = None,
+    notes: str | None = None,
+    due_iso: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    """Patch parcial de una tarea."""
+    svc = _get_tasks_service()
+    body: dict[str, Any] = {}
+    if title is not None:
+        body["title"] = title
+    if notes is not None:
+        body["notes"] = notes
+    if due_iso is not None:
+        body["due"] = due_iso
+    if status is not None:
+        body["status"] = status
+    return svc.tasks().patch(
+        tasklist=tasklist_id, task=task_id, body=body
+    ).execute()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def summary_for_dashboard(max_items: int = 5) -> dict[str, Any]:
+    """Devuelve tareas pendientes a través de todas las listas."""
+    out: list[dict[str, Any]] = []
+    for tl in list_tasklists():
+        try:
+            tasks = list_tasks(
+                tasklist_id=tl["id"],
+                show_completed=False,
+                max_results=max(1, max_items - len(out)),
+            )
+        except Exception:
+            continue
+        for t in tasks:
+            out.append({
+                "id": t.get("id"),
+                "title": t.get("title", "(sin título)"),
+                "list":  tl.get("title", ""),
+                "due":   t.get("due"),
+                "notes": t.get("notes"),
+            })
+            if len(out) >= max_items:
+                break
+        if len(out) >= max_items:
+            break
+    return {"pending": out, "count": len(out)}
+</file>
+
+<file path="actions/google_workspace.py">
+"""
+google_workspace.py
+====================
+Fachada de alto nivel que Mark-XLVIII expone al LLM (Gemini).
+
+En vez de enseñarle a Gemini 20 funciones distintas, le enseñamos una sola
+función llamada `google` con un parámetro `intent` y un `params` libre (dict).
+La fachada interpreta `intent` y delega al módulo correcto.
+
+Intenciones soportadas:
+
+CALENDAR
+  calendar.today                  → eventos de hoy
+  calendar.upcoming               → próximo evento
+  calendar.search   query=...     → búsqueda
+  calendar.create   title, start, end[, tz]
+  calendar.delete   event_id
+
+TASKS
+  tasks.list        [list_title]
+  tasks.add         title[, list_id][, due_iso][, notes]
+  tasks.complete    task_id[, list_id]
+  tasks.delete      task_id[, list_id]
+
+GMAIL
+  gmail.unread      [account][, limit]
+  gmail.search      query[, account]
+  gmail.send        to, subject, body[, account]
+  gmail.read        msg_id[, account]
+  gmail.mark_read   msg_id[, account]
+  gmail.archive     msg_id[, account]
+  gmail.trash       msg_id[, account]
+
+DRIVE
+  drive.list        [query][, folder_id]
+  drive.search      text
+  drive.upload      local_path[, folder_id]
+  drive.download    file_id
+  drive.mkdir       name[, parent_id]
+  drive.share       file_id, email[, role]
+  drive.delete      file_id
+
+CONTACTS
+  contacts.search   query
+  contacts.list     (all other contacts)
+  contacts.get      resource_name
+  contacts.create   given_name[, family_name][, email][, phone]
+  contacts.delete   resource_name
+
+AUTH / UTIL
+  google.status     → qué servicios están conectados
+  google.disconnect service[, account]
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from . import google_auth
+from . import google_calendar as _cal
+from . import google_tasks    as _tasks
+from . import gmail_manager   as _gmail
+from . import google_drive    as _drive
+from . import google_contacts as _crm
+
+SAFE_INTENTS = {
+    # calendar
+    "calendar.today", "calendar.upcoming", "calendar.search",
+    "calendar.create", "calendar.delete",
+    # tasks
+    "tasks.list", "tasks.add", "tasks.complete", "tasks.delete",
+    # gmail
+    "gmail.unread", "gmail.search", "gmail.send",
+    "gmail.read", "gmail.mark_read", "gmail.archive", "gmail.trash",
+    # drive
+    "drive.list", "drive.search", "drive.upload", "drive.download",
+    "drive.mkdir", "drive.share", "drive.delete",
+    # contacts
+    "contacts.search", "contacts.list", "contacts.get",
+    "contacts.create", "contacts.delete",
+    # auth
+    "google.status", "google.disconnect",
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Despacho principal
+# ─────────────────────────────────────────────────────────────────────────────
+
+def google(intent: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """
+    Punto único de entrada para todas las operaciones Google.
+    `intent` debe estar en SAFE_INTENTS; si no, devuelve {"ok": False, ...}.
+    `params` es un dict libre cuyas claves dependen del intent.
+    Devuelve un dict serializable que el LLM puede narrar.
+    """
+    params = params or {}
+
+    if intent not in SAFE_INTENTS:
+        return {
+            "ok": False,
+            "intent": intent,
+            "error": (
+                f"intent no soportado: {intent!r}. "
+                f"Disponibles: {sorted(SAFE_INTENTS)}"
+            ),
+        }
+
+    try:
+        handler = _HANDLERS[intent]
+        result = handler(params)
+        return {"ok": True, "intent": intent, "result": result}
+    except Exception as e:
+        return {"ok": False, "intent": intent, "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Handlers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _h_calendar_today(p):     return _cal.summary_for_dashboard()["today"]
+def _h_calendar_upcoming(p):
+    e = _cal.upcoming_event()
+    return e or "Sin eventos próximos"
+
+def _h_calendar_search(p):
+    q = p.get("query") or p.get("q") or ""
+    return _cal.list_events(query=q, max_results=int(p.get("max_results", 10)))
+
+def _h_calendar_create(p):
+    return _cal.create_event(
+        summary=p["summary"],
+        start_iso=p["start"],
+        end_iso=p["end"],
+        timezone_str=p.get("tz", "America/Bogota"),
+        description=p.get("description"),
+        location=p.get("location"),
+        attendees=p.get("attendees"),
+    )
+
+def _h_calendar_delete(p):
+    _cal.delete_event(p["event_id"])
+    return {"deleted": p["event_id"]}
+
+
+def _h_tasks_list(p):
+    title = p.get("list_title")
+    if title:
+        lid = _tasks.find_tasklist_id(title) or "@default"
+    else:
+        lid = p.get("list_id", "@default")
+    items = _tasks.list_tasks(tasklist_id=lid, max_results=int(p.get("max_results", 50)))
+    return {"list_id": lid, "items": items}
+
+
+def _h_tasks_add(p):
+    return _tasks.add_task(
+        title=p["title"],
+        tasklist_id=p.get("list_id", "@default"),
+        notes=p.get("notes"),
+        due_iso=p.get("due"),
+    )
+
+
+def _h_tasks_complete(p):
+    return _tasks.complete_task(p["task_id"], p.get("list_id", "@default"))
+
+
+def _h_tasks_delete(p):
+    _tasks.delete_task(p["task_id"], p.get("list_id", "@default"))
+    return {"deleted": p["task_id"]}
+
+
+def _h_gmail_unread(p):
+    msgs = _gmail.list_unread(
+        email=p.get("account"), limit=int(p.get("limit", 10))
+    )
+    return {"count": len(msgs), "ids": [m["id"] for m in msgs]}
+
+
+def _h_gmail_search(p):
+    msgs = _gmail.search_messages(
+        p["query"], email=p.get("account"), limit=int(p.get("limit", 20))
+    )
+    return {"count": len(msgs), "ids": [m["id"] for m in msgs]}
+
+
+def _h_gmail_send(p):
+    res = _gmail.send_message(
+        to=p["to"], subject=p["subject"], body=p["body"],
+        email=p.get("account"), html=bool(p.get("html", False)),
+    )
+    return {"id": res.get("id"), "threadId": res.get("threadId")}
+
+
+def _h_gmail_read(p):
+    return _gmail.message_summary(p["msg_id"], email=p.get("account"))
+
+
+def _h_gmail_mark_read(p):
+    _gmail.mark_read(p["msg_id"], email=p.get("account"))
+    return {"marked_read": p["msg_id"]}
+
+
+def _h_gmail_archive(p):
+    _gmail.archive(p["msg_id"], email=p.get("account"))
+    return {"archived": p["msg_id"]}
+
+
+def _h_gmail_trash(p):
+    _gmail.move_to_trash(p["msg_id"], email=p.get("account"))
+    return {"trashed": p["msg_id"]}
+
+
+def _h_drive_list(p):
+    return _drive.list_files(
+        max_results=int(p.get("max_results", 25)),
+        query=p.get("query"),
+        folder_id=p.get("folder_id"),
+    )
+
+
+def _h_drive_search(p):
+    return _drive.search_files(p["text"], max_results=int(p.get("max_results", 25)))
+
+
+def _h_drive_upload(p):
+    res = _drive.upload_file(
+        p["local_path"], folder_id=p.get("folder_id"),
+        filename=p.get("filename"),
+    )
+    return {"id": res.get("id"), "name": res.get("name"), "link": res.get("webViewLink")}
+
+
+def _h_drive_download(p):
+    path = _drive.download_file(p["file_id"])
+    return {"path": str(path), "size": path.stat().st_size}
+
+
+def _h_drive_mkdir(p):
+    res = _drive.create_folder(p["name"], parent_id=p.get("parent_id"))
+    return {"id": res.get("id"), "name": res.get("name"), "link": res.get("webViewLink")}
+
+
+def _h_drive_share(p):
+    perm = _drive.share_file(p["file_id"], email=p["email"], role=p.get("role", "reader"))
+    return {"permission_id": perm.get("id")}
+
+
+def _h_drive_delete(p):
+    _drive.delete_file(p["file_id"])
+    return {"deleted": p["file_id"]}
+
+
+def _h_contacts_search(p):
+    return _crm.search_contacts(p["query"])
+
+
+def _h_contacts_list(p):
+    return _crm.list_other_contacts()
+
+
+def _h_contacts_get(p):
+    return _crm.get_contact(p["resource_name"])
+
+
+def _h_contacts_create(p):
+    res = _crm.create_contact(
+        given_name=p["given_name"],
+        family_name=p.get("family_name"),
+        email=p.get("email"),
+        phone=p.get("phone"),
+        organization=p.get("organization"),
+    )
+    return {"resource_name": res.get("resourceName")}
+
+
+def _h_contacts_delete(p):
+    _crm.delete_contact(p["resource_name"])
+    return {"deleted": p["resource_name"]}
+
+
+def _h_status(p):
+    return {
+        service: {
+            "connected": google_auth.token_has_refresh(service),
+            "accounts":  google_auth.load_accounts(service),
+        }
+        for service in ("calendar", "tasks", "gmail", "drive", "contacts")
+    }
+
+
+def _h_disconnect(p):
+    google_auth.delete_token(p["service"], p.get("account", "primary"))
+    return {"service": p["service"], "account": p.get("account", "primary"),
+            "disconnected": True}
+
+
+_HANDLERS = {
+    # calendar
+    "calendar.today":      _h_calendar_today,
+    "calendar.upcoming":   _h_calendar_upcoming,
+    "calendar.search":     _h_calendar_search,
+    "calendar.create":     _h_calendar_create,
+    "calendar.delete":     _h_calendar_delete,
+    # tasks
+    "tasks.list":          _h_tasks_list,
+    "tasks.add":           _h_tasks_add,
+    "tasks.complete":      _h_tasks_complete,
+    "tasks.delete":        _h_tasks_delete,
+    # gmail
+    "gmail.unread":        _h_gmail_unread,
+    "gmail.search":        _h_gmail_search,
+    "gmail.send":          _h_gmail_send,
+    "gmail.read":          _h_gmail_read,
+    "gmail.mark_read":     _h_gmail_mark_read,
+    "gmail.archive":       _h_gmail_archive,
+    "gmail.trash":         _h_gmail_trash,
+    # drive
+    "drive.list":          _h_drive_list,
+    "drive.search":        _h_drive_search,
+    "drive.upload":        _h_drive_upload,
+    "drive.download":      _h_drive_download,
+    "drive.mkdir":         _h_drive_mkdir,
+    "drive.share":         _h_drive_share,
+    "drive.delete":        _h_drive_delete,
+    # contacts
+    "contacts.search":     _h_contacts_search,
+    "contacts.list":       _h_contacts_list,
+    "contacts.get":        _h_contacts_get,
+    "contacts.create":     _h_contacts_create,
+    "contacts.delete":     _h_contacts_delete,
+    # auth
+    "google.status":       _h_status,
+    "google.disconnect":   _h_disconnect,
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Narración amigable (lo que dirá Gemini en voz alta)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def narrate(intent: str, payload: dict[str, Any]) -> str:
+    """Convierte la respuesta JSON de `google()` en una frase breve."""
+    if not payload.get("ok"):
+        return f"Hubo un problema: {payload.get('error', 'desconocido')}"
+    r = payload.get("result")
+
+    if intent == "calendar.today":
+        if isinstance(r, list) and r:
+            titles = ", ".join(e.get("title", "?") for e in r[:5])
+            return f"Tienes {len(r)} reuniones hoy: {titles}."
+        return "Hoy no tienes reuniones."
+
+    if intent == "calendar.upcoming":
+        if isinstance(r, dict):
+            return f"Próximo: {r.get('summary', 'sin título')}."
+        return str(r)
+
+    if intent == "calendar.create":
+        return f"Evento '{r.get('summary')}' creado."
+
+    if intent == "tasks.list":
+        items = r.get("items", [])
+        if not items:
+            return "No tienes tareas pendientes."
+        titles = ", ".join(t.get("title", "?") for t in items[:5])
+        return f"Tienes {len(items)} tareas. Las primeras: {titles}."
+
+    if intent == "tasks.add":
+        return f"Tarea '{r.get('title')}' añadida."
+
+    if intent == "tasks.complete":
+        return "Tarea completada."
+
+    if intent == "gmail.unread":
+        return f"Tienes {r.get('count', 0)} correos sin leer."
+
+    if intent == "gmail.search":
+        return f"Encontré {r.get('count', 0)} mensajes."
+
+    if intent == "gmail.send":
+        return "Correo enviado."
+
+    if intent == "gmail.mark_read":
+        return "Marcado como leído."
+
+    if intent == "gmail.archive":
+        return "Archivado."
+
+    if intent == "gmail.trash":
+        return "Enviado a la papelera."
+
+    if intent == "gmail.read":
+        return f"Asunto: {r.get('subject','(sin asunto)')}. De {r.get('from','desconocido')}."
+
+    if intent == "drive.search":
+        if isinstance(r, list) and r:
+            names = ", ".join(f.get("name", "?") for f in r[:5])
+            return f"Encontré {len(r)} archivos: {names}."
+        return "Sin resultados."
+
+    if intent == "drive.list":
+        if isinstance(r, list) and r:
+            return f"Hay {len(r)} archivos en Drive."
+        return "Sin archivos."
+
+    if intent == "drive.upload":
+        return f"Subido como '{r.get('name')}'."
+
+    if intent == "drive.download":
+        return f"Descargado en {r.get('path')}."
+
+    if intent == "drive.mkdir":
+        return f"Carpeta '{r.get('name')}' creada."
+
+    if intent == "drive.share":
+        return "Archivo compartido."
+
+    if intent == "contacts.search":
+        if isinstance(r, list) and r:
+            names = ", ".join(c.get("display_name", "?") for c in r[:5])
+            return f"Encontré {len(r)} contactos: {names}."
+        return "Sin contactos."
+
+    if intent == "contacts.create":
+        return "Contacto creado."
+
+    if intent == "google.status":
+        connected = [s for s, v in r.items() if v["connected"]]
+        return f"Conectado a: {', '.join(connected) or 'ninguno'}."
+
+    return f"Hecho: {intent}."
+</file>
+
+<file path="actions/reminder.py">
+import json
+import os
+import sys
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+def _base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+def reminder(
+    parameters: dict,
+    response=None,
+    player=None,
+    session_memory=None,
+) -> str:
+    date_str = parameters.get("date", "").strip()
+    time_str = parameters.get("time", "").strip()
+    message  = parameters.get("message", "Reminder").strip()
+
+    if not date_str or not time_str:
+        return "I need both a date and a time to set a reminder."
+
+    try:
+        target_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return "I couldn't parse that date or time. Please use YYYY-MM-DD and HH:MM."
+
+    if target_dt <= datetime.now():
+        return "That time has already passed — I can't set a reminder in the past."
+
+    # Save to memory/pending_reminders.json
+    reminders_file = _base_dir() / "memory" / "pending_reminders.json"
+
+    try:
+        if reminders_file.exists():
+            with open(reminders_file, "r", encoding="utf-8") as f:
+                reminders = json.load(f)
+        else:
+            reminders = []
+
+        if not isinstance(reminders, list):
+            reminders = []
+
+        new_reminder = {
+            "id": str(uuid.uuid4()),
+            "datetime_iso": target_dt.isoformat(),
+            "message": message
+        }
+        reminders.append(new_reminder)
+
+        with open(reminders_file, "w", encoding="utf-8") as f:
+            json.dump(reminders, f, indent=4)
+
+    except Exception as e:
+        print(f"[Reminder] ❌ Failed to save reminder: {e}")
+        return "Something went wrong while saving the reminder."
+
+    if player:
+        player.write_log(f"[Reminder] ✅ {date_str} {time_str} — {message[:40]}")
+
+    friendly_time = target_dt.strftime("%B %d at %I:%M %p")
+    return f"Reminder set for {friendly_time}."
+</file>
+
+<file path="actions/send_message.py">
+import json
+import subprocess
+import sys
+import urllib.parse
+from pathlib import Path
+
+def _base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+def _open_url(url: str) -> bool:
+    try:
+        # Using termux-open-url as requested for Android/Termux environments
+        subprocess.run(["termux-open-url", url], check=True)
+        return True
+    except Exception as e:
+        print(f"[SendMessage] ⚠️ termux-open-url failed: {e}")
+        return False
+
+def _send_whatsapp(receiver: str, message: str) -> str:
+    # WhatsApp deep link: https://wa.me/<number>?text=<message>
+    encoded_msg = urllib.parse.quote(message)
+    url = f"https://wa.me/{receiver}?text={encoded_msg}"
+    if _open_url(url):
+        return f"Message sent to {receiver} via WhatsApp."
+    return f"Could not open WhatsApp. Link: {url}"
+
+def _send_telegram(receiver: str, message: str) -> str:
+    # Telegram deep link: https://t.me/<username>?text=<message>
+    encoded_msg = urllib.parse.quote(message)
+    url = f"https://t.me/{receiver}?text={encoded_msg}"
+    if _open_url(url):
+        return f"Message sent to {receiver} via Telegram."
+    return f"Could not open Telegram. Link: {url}"
+
+def send_message(
+    parameters: dict,
+    response=None,
+    player=None,
+    session_memory=None,
+) -> str:
+    params       = parameters or {}
+    receiver     = params.get("receiver", "").strip()
+    message_text = params.get("message_text", "").strip()
+    platform     = params.get("platform", "whatsapp").strip().lower()
+
+    if not receiver:
+        return "Please specify a recipient."
+    if not message_text:
+        return "Please specify the message content."
+
+    preview = message_text[:50] + ("…" if len(message_text) > 50 else "")
+    print(f"[SendMessage] 📨 {platform} → {receiver}: {preview}")
+    if player:
+        player.write_log(f"[msg] {platform} → {receiver}")
+
+    try:
+        if "whatsapp" in platform or "wp" in platform:
+            result = _send_whatsapp(receiver, message_text)
+        elif "telegram" in platform or "tg" in platform:
+            result = _send_telegram(receiver, message_text)
+        else:
+            result = f"Unsupported platform: {platform}. Use WhatsApp or Telegram."
+    except Exception as e:
+        result = f"Could not send message: {e}"
+
+    print(f"[SendMessage] {'✅' if 'sent' in result.lower() else '❌'} {result}")
+    if player:
+        player.write_log(f"[msg] {result}")
+
+    return result
+</file>
+
+<file path="actions/weather_report.py">
+import webbrowser
+from urllib.parse import quote_plus
+
+
+def weather_action(
+    parameters: dict,
+    player=None,
+    session_memory=None,
+) -> str:
+    city     = parameters.get("city")
+    when     = parameters.get("time", "today")  
+
+    if not city or not isinstance(city, str) or not city.strip():
+        msg = "Sir, the city is missing for the weather report."
+        _log(msg, player)
+        return msg
+
+    city = city.strip()
+    when = (when or "today").strip()
+
+    search_query  = f"weather in {city} {when}"
+    url           = f"https://www.google.com/search?q={quote_plus(search_query)}"
+
+    try:
+        opened = webbrowser.open(url)
+        if not opened:
+            raise RuntimeError("webbrowser.open returned False")
+    except Exception as e:
+        msg = f"Sir, I couldn't open the browser for the weather report: {e}"
+        _log(msg, player)
+        return msg
+
+    msg = f"Showing the weather for {city}, {when}, sir."
+    _log(msg, player)
+
+    if session_memory:
+        try:
+            session_memory.set_last_search(query=search_query, response=msg)
+        except Exception:
+            pass
+
+    return msg
+
+
+def _log(message: str, player=None) -> None:
+    print(f"[Weather] {message}")
+    if player:
+        try:
+            player.write_log(f"JARVIS: {message}")
+        except Exception:
+            pass
+</file>
+
+<file path="actions/web_search.py">
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+def _get_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+
+BASE_DIR        = _get_base_dir()
+API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+
+
+def _get_api_key() -> str:
+    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)["gemini_api_key"]
+
+
+def _gemini_search(query: str) -> str:
+    from google import genai
+
+    client   = genai.Client(api_key=_get_api_key())
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=query,
+        config={"tools": [{"google_search": {}}]},
+    )
+
+    text = ""
+    for part in response.candidates[0].content.parts:
+        if hasattr(part, "text") and part.text:
+            text += part.text
+
+    text = text.strip()
+    if not text:
+        raise ValueError("Gemini returned an empty response.")
+    return text
+
+
+def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        from duckduckgo_search import DDGS
+
+    results = []
+    with DDGS() as ddgs:
+        for r in ddgs.text(query, max_results=max_results):
+            results.append({
+                "title":   r.get("title",  ""),
+                "snippet": r.get("body",   ""),
+                "url":     r.get("href",   ""),
+            })
+    return results
+
+
+def _ddg_news(query: str, max_results: int = 8) -> list[dict]:
+    """DDG news search — returns actual articles, not website homepages."""
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        from duckduckgo_search import DDGS
+
+    results = []
+    try:
+        with DDGS() as ddgs:
+            for r in ddgs.news(query, max_results=max_results):
+                results.append({
+                    "title":   r.get("title",  ""),
+                    "snippet": r.get("body",   ""),
+                    "url":     r.get("url",    ""),
+                    "source":  r.get("source", ""),
+                })
+    except Exception as e:
+        print(f"[WebSearch] ⚠️ DDG news() failed ({e}) — falling back to text search")
+        results = _ddg_search(query, max_results=max_results)
+    return results
+
+
+def _format_ddg(query: str, results: list[dict]) -> str:
+    if not results:
+        return f"No results found for: {query}"
+
+    lines = [f"Search results for: {query}\n"]
+    for i, r in enumerate(results, 1):
+        if r.get("title"):   lines.append(f"{i}. {r['title']}")
+        if r.get("snippet"): lines.append(f"   {r['snippet']}")
+        if r.get("url"):     lines.append(f"   Source: {r['url']}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+# ── Parallel search (first-result-wins) ────────────────────────────────────────
+
+async def _gemini_search_async(query: str) -> str:
+    """Async wrapper around _gemini_search."""
+    return await asyncio.to_thread(_gemini_search, query)
+
+
+async def _ddg_search_async(query: str, max_results: int = 6) -> str:
+    """Async wrapper around _ddg_search + formatting."""
+    def _run():
+        results = _ddg_search(query, max_results=max_results)
+        return _format_ddg(query, results)
+    return await asyncio.to_thread(_run)
+
+
+async def _parallel_search(query: str, max_results: int = 6) -> str:
+    """
+    Run Gemini and DDG in parallel; return whichever finishes first with content.
+    Falls back to the other if the winner returns empty/error.
+    """
+    gemini_task = asyncio.create_task(_gemini_search_async(query))
+    ddg_task    = asyncio.create_task(_ddg_search_async(query, max_results))
+
+    pending = {gemini_task, ddg_task}
+    while pending:
+        done, pending = await asyncio.wait(
+            pending, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in done:
+            try:
+                result = task.result()
+                if result and not result.startswith("No results"):
+                    # Cancel the loser, return the winner
+                    for t in pending:
+                        t.cancel()
+                    return result
+            except Exception:
+                continue
+
+    # Both failed — return whatever error info we have
+    try:
+        return await gemini_task
+    except Exception:
+        pass
+    try:
+        return await ddg_task
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+# ── Modes ──────────────────────────────────────────────────────────────────────
+
+def _search(query: str) -> str:
+    """Default search — Gemini grounded and DDG run in parallel; first valid wins."""
+    try:
+        return asyncio.run(_parallel_search(query))
+    except RuntimeError:
+        # Already in an event loop — fallback to sequential
+        try:
+            return _gemini_search(query)
+        except Exception as e:
+            print(f"[WebSearch] ⚠️ Gemini failed ({e}) — trying DDG...")
+            results = _ddg_search(query)
+            return _format_ddg(query, results)
+    except Exception as e:
+        print(f"[WebSearch] ⚠️ Parallel search failed ({e}) — sequential fallback")
+        try:
+            return _gemini_search(query)
+        except Exception:
+            results = _ddg_search(query)
+            return _format_ddg(query, results)
+
+
+def _research(query: str) -> str:
+    """
+    Deep dive — asks Gemini for a comprehensive answer with context.
+    Falls back to a wider DDG fetch.
+    """
+    research_query = (
+        f"Comprehensive, detailed explanation of: {query}. "
+        "Include background context, key facts, current state, and important nuances."
+    )
+    try:
+        return asyncio.run(_parallel_search(research_query, max_results=10))
+    except RuntimeError:
+        try:
+            return _gemini_search(research_query)
+        except Exception as e:
+            print(f"[WebSearch] ⚠️ Research Gemini failed ({e}) — DDG fallback...")
+            results = _ddg_search(query, max_results=10)
+            return _format_ddg(query, results)
+    except Exception as e:
+        print(f"[WebSearch] �️ Parallel research failed ({e}) — sequential fallback")
+        try:
+            return _gemini_search(research_query)
+        except Exception:
+            results = _ddg_search(query, max_results=10)
+            return _format_ddg(query, results)
+
+
+def _price(query: str) -> str:
+    """Product price lookup — searches for current market prices."""
+    price_query = f"current price of {query} — how much does it cost today"
+    try:
+        return asyncio.run(_parallel_search(price_query, max_results=6))
+    except RuntimeError:
+        try:
+            return _gemini_search(price_query)
+        except Exception as e:
+            print(f"[WebSearch] ⚠️ Price Gemini failed ({e}) — DDG fallback...")
+            results = _ddg_search(f"{query} price buy", max_results=6)
+            return _format_ddg(query, results)
+    except Exception as e:
+        print(f"[WebSearch] ⚠️ Parallel price failed ({e}) — sequential fallback")
+        try:
+            return _gemini_search(price_query)
+        except Exception:
+            results = _ddg_search(f"{query} price buy", max_results=6)
+            return _format_ddg(query, results)
+
+
+def _compare(items: list[str], aspect: str) -> str:
+    query = (
+        f"Compare {', '.join(items)} in terms of {aspect}. "
+        "Give specific facts and data."
+    )
+    try:
+        return _gemini_search(query)
+    except Exception as e:
+        print(f"[WebSearch] ⚠️ Gemini compare failed: {e} — falling back to DDG")
+
+    all_results: dict[str, list] = {}
+    for item in items:
+        try:
+            all_results[item] = _ddg_search(f"{item} {aspect}", max_results=3)
+        except Exception:
+            all_results[item] = []
+
+    lines = [f"Comparison — {aspect.upper()}", "─" * 40]
+    for item in items:
+        lines.append(f"\n▸ {item}")
+        for r in all_results.get(item, [])[:2]:
+            if r.get("snippet"):
+                lines.append(f"  • {r['snippet']}")
+            if r.get("url"):
+                lines.append(f"    {r['url']}")
+    return "\n".join(lines)
+
+
+# ── Public entry point ─────────────────────────────────────────────────────────
+
+def web_search(
+    parameters:     dict,
+    response=None,
+    player=None,
+    session_memory=None,
+) -> str:
+    params = parameters or {}
+    query  = params.get("query", "").strip()
+    mode   = params.get("mode",  "search").lower().strip()
+    items  = params.get("items", [])
+    aspect = params.get("aspect", "general").strip() or "general"
+
+    if not query and not items:
+        return "Please provide a search query."
+
+    if items and mode not in ("compare",):
+        mode = "compare"
+
+    if player:
+        player.write_log(f"[Search:{mode}] {query or ', '.join(items)}")
+
+    print(f"[WebSearch] 🔍 mode={mode!r}  query={query!r}")
+
+    try:
+        if mode == "compare" and items:
+            return _compare(items, aspect)
+        if mode == "research":
+            return _research(query)
+        if mode == "price":
+            return _price(query)
+        return _search(query)
+
+    except Exception as e:
+        print(f"[WebSearch] ❌ All backends failed: {e}")
+        return f"Search failed: {e}"
+</file>
+
+<file path="actions/youtube_video.py">
+import json
+import re
+import sys
+import time
+import subprocess
+import shutil
+from pathlib import Path
+from datetime import datetime
+from urllib.parse import quote_plus
+
+try:
+    import numpy as np
+    _NUMPY = True
+except ImportError:
+    _NUMPY = False
+
+try:
+    import requests
+    _REQUESTS_OK = True
+except ImportError:
+    _REQUESTS_OK = False
+
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi
+    _TRANSCRIPT_OK = True
+except ImportError:
+    _TRANSCRIPT_OK = False
+
+from config import get_os, is_windows, is_mac, is_linux
+
+
+def _get_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+
+BASE_DIR        = _get_base_dir()
+API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+_YT_VIDEO_FILTER = "EgIQAQ%3D%3D"
+
+
+def _get_api_key() -> str:
+    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)["gemini_api_key"]
+
+
+def _open_url(url: str) -> bool:
+    try:
+        # Use termux-open-url for Android/Termux environments
+        subprocess.run(["termux-open-url", url], check=True)
+        return True
+    except Exception as e:
+        print(f"[YouTube] ⚠️ open_url failed: {e}")
+        return False
+
+def _scrape_first_video_url(query: str) -> str | None:
+
+    if not _REQUESTS_OK:
+        return None
+
+    search_url = (
+        f"https://www.youtube.com/results"
+        f"?search_query={quote_plus(query)}"
+        f"&sp={_YT_VIDEO_FILTER}"
+    )
+
+    try:
+        r    = requests.get(search_url, headers=HEADERS, timeout=10)
+        html = r.text
+
+        video_ids = re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', html)
+
+        seen = set()
+        for vid in video_ids:
+            if vid in seen:
+                continue
+            seen.add(vid)
+
+            if f'/shorts/{vid}' in html:
+                continue
+            return f"https://www.youtube.com/watch?v={vid}"
+
+    except Exception as e:
+        print(f"[YouTube] ⚠️ scrape_first_video_url failed: {e}")
+
+    return None
+
+def _extract_video_id(url: str) -> str | None:
+    match = re.search(
+        r"(?:v=|\/v\/|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})", url
+    )
+    return match.group(1) if match else None
+
+
+def _is_valid_youtube_url(url: str) -> bool:
+    return bool(re.search(r"(youtube\.com|youtu\.be)", url or ""))
+
+
+def _ask_for_url(prompt_text: str = "YouTube video URL:") -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import simpledialog
+
+        root = tk._default_root
+        if root is None:
+            root = tk.Tk()
+            root.withdraw()
+
+        url = simpledialog.askstring("J.A.R.V.I.S", prompt_text, parent=root)
+        return url.strip() if url else None
+    except Exception as e:
+        print(f"[YouTube] ⚠️ URL dialog failed: {e}")
+        return None
+
+
+def _get_transcript(video_id: str) -> str | None:
+    if not _TRANSCRIPT_OK:
+        return None
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript      = None
+
+        lang_priority = ["en", "tr", "de", "fr", "es", "it", "pt", "ru", "ja", "ko", "ar", "zh"]
+
+        try:
+            transcript = transcript_list.find_manually_created_transcript(lang_priority)
+        except Exception:
+            pass
+
+        if transcript is None:
+            try:
+                transcript = transcript_list.find_generated_transcript(lang_priority)
+            except Exception:
+                for t in transcript_list:
+                    transcript = t
+                    break
+
+        if transcript is None:
+            return None
+
+        fetched = transcript.fetch()
+        return " ".join(entry["text"] for entry in fetched)
+
+    except Exception as e:
+        print(f"[YouTube] ⚠️ Transcript fetch failed: {e}")
+        return None
+
+
+def _summarize_with_gemini(transcript: str, video_url: str) -> str:
+    from google import genai as _genai
+    from google.genai import types
+
+    _client = _genai.Client(api_key=_get_api_key())
+    max_chars = 80000
+    truncated = transcript[:max_chars] + ("..." if len(transcript) > max_chars else "")
+    response  = _client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=f"Please summarize this YouTube video transcript:\n\n{truncated}",
+        config=types.GenerateContentConfig(
+            system_instruction=(
+                "You are JARVIS, an AI assistant. "
+                "Summarize YouTube video transcripts clearly and concisely. "
+                "Structure: 1-sentence overview, then 3-5 key points. "
+                "Be direct. Address the user as 'sir'. "
+                "Match the language of the transcript."
+            )
+        )
+    )
+    return response.text.strip()
+
+
+def _save_summary(content: str, video_url: str) -> str:
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"youtube_summary_{ts}.txt"
+    desktop  = Path.home() / "Desktop"
+    desktop.mkdir(parents=True, exist_ok=True)
+    filepath = desktop / filename
+
+    header = (
+        f"JARVIS — YouTube Summary\n"
+        f"{'─' * 50}\n"
+        f"URL    : {video_url}\n"
+        f"Date   : {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"{'─' * 50}\n\n"
+    )
+    filepath.write_text(header + content, encoding="utf-8")
+
+    try:
+        if is_windows():
+            subprocess.Popen(["notepad.exe", str(filepath)])
+        elif is_mac():
+            subprocess.Popen(["open", "-t", str(filepath)])
+        else:
+            subprocess.Popen(["xdg-open", str(filepath)])
+    except Exception as e:
+        print(f"[YouTube] ⚠️ Could not open text editor: {e}")
+
+    return str(filepath)
+
+
+def _scrape_video_info(video_id: str) -> dict:
+    if not _REQUESTS_OK:
+        return {}
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        r    = requests.get(url, headers=HEADERS, timeout=12)
+        html = r.text
+        info = {}
+
+        for key, pattern in [
+            ("title",    r'"title":\{"runs":\[\{"text":"([^"]+)"'),
+            ("channel",  r'"ownerChannelName":"([^"]+)"'),
+            ("views",    r'"viewCount":"(\d+)"'),
+            ("duration", r'"lengthSeconds":"(\d+)"'),
+            ("likes",    r'"label":"([0-9,]+ likes)"'),
+        ]:
+            match = re.search(pattern, html)
+            if match:
+                raw = match.group(1)
+                if key == "views":
+                    info[key] = f"{int(raw):,}"
+                elif key == "duration":
+                    secs = int(raw)
+                    info[key] = f"{secs // 60}:{secs % 60:02d}"
+                else:
+                    info[key] = raw
+
+        return info
+    except Exception as e:
+        print(f"[YouTube] ⚠️ Info scrape failed: {e}")
+        return {}
+
+
+def _scrape_trending(region: str = "TR", max_results: int = 8) -> list[dict]:
+    if not _REQUESTS_OK:
+        return []
+    url = f"https://www.youtube.com/feed/trending?gl={region.upper()}"
+    try:
+        r    = requests.get(url, headers=HEADERS, timeout=12)
+        html = r.text
+
+        titles   = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"\}\]', html)
+        channels = re.findall(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"', html)
+
+        results, seen = [], set()
+        for i, title in enumerate(titles):
+            if title in seen or len(title) < 5:
+                continue
+            seen.add(title)
+            channel = channels[i] if i < len(channels) else "Unknown"
+            results.append({"rank": len(results) + 1, "title": title, "channel": channel})
+            if len(results) >= max_results:
+                break
+
+        return results
+    except Exception as e:
+        print(f"[YouTube] ⚠️ Trending scrape failed: {e}")
+        return []
+
+def _handle_play(parameters: dict, player) -> str:
+    query = parameters.get("query", "").strip()
+    if not query:
+        return "Please tell me what you'd like to watch, sir."
+
+    if player:
+        player.write_log(f"[YouTube] Searching: {query}")
+
+    print(f"[YouTube] 🔍 Scraping first non-Shorts video for: {query}")
+
+    video_url = _scrape_first_video_url(query)
+
+    if video_url:
+        print(f"[YouTube] ▶️ Opening: {video_url}")
+        if _open_url(video_url):
+            return f"Playing: {query}"
+        else:
+            return f"Could not open browser to play {query}, sir. Link: {video_url}"
+
+    print(f"[YouTube] ⚠️ Scrape failed, opening filtered search page")
+    fallback_url = (
+        f"https://www.youtube.com/results"
+        f"?search_query={quote_plus(query)}"
+        f"&sp={_YT_VIDEO_FILTER}"
+    )
+    if _open_url(fallback_url):
+        return f"Opened YouTube search for: {query} (manual selection required)"
+    else:
+        return f"Could not open browser for {query}, sir. Link: {fallback_url}"
+
+def _handle_summarize(parameters: dict, player, speak) -> str:
+    if not _TRANSCRIPT_OK:
+        return "youtube-transcript-api is not installed. Run: pip install youtube-transcript-api"
+
+    url = _ask_for_url("Please paste the YouTube video URL:")
+    if not url:
+        return "No URL provided, sir. Summary cancelled."
+    if not _is_valid_youtube_url(url):
+        return "That doesn't appear to be a valid YouTube URL, sir."
+
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return "Could not extract video ID from that URL, sir."
+
+    if player:
+        player.write_log(f"[YouTube] Summarizing: {url}")
+    if speak:
+        speak("Fetching the transcript now, sir. One moment.")
+
+    transcript = _get_transcript(video_id)
+    if not transcript:
+        return "I couldn't retrieve a transcript for that video, sir."
+
+    if speak:
+        speak("Transcript retrieved. Generating summary now.")
+
+    try:
+        summary = _summarize_with_gemini(transcript, url)
+    except Exception as e:
+        return f"Summary generation failed, sir: {e}"
+
+    if speak:
+        speak(summary)
+
+    if parameters.get("save", False):
+        saved_path = _save_summary(summary, url)
+        return f"Summary complete and saved to Desktop: {saved_path}"
+
+    return summary
+
+
+def _handle_get_info(parameters: dict, player, speak) -> str:
+    url = parameters.get("url", "").strip()
+    if not url:
+        url = _ask_for_url("Please paste the YouTube video URL:")
+    if not url or not _is_valid_youtube_url(url):
+        return "Please provide a valid YouTube URL, sir."
+
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return "Could not extract video ID, sir."
+
+    if player:
+        player.write_log(f"[YouTube] Getting info: {url}")
+
+    info = _scrape_video_info(video_id)
+    if not info:
+        return "Could not retrieve video information, sir."
+
+    lines = [
+        f"{key.capitalize()}: {info[key]}"
+        for key in ("title", "channel", "views", "duration", "likes")
+        if key in info
+    ]
+    result = "\n".join(lines)
+
+    if speak:
+        speak(f"Here's the video info, sir. {result.replace(chr(10), '. ')}")
+
+    return result
+
+
+def _handle_trending(parameters: dict, player, speak) -> str:
+    region = parameters.get("region", "TR").upper()
+
+    if player:
+        player.write_log(f"[YouTube] Trending: {region}")
+
+    trending = _scrape_trending(region=region, max_results=8)
+    if not trending:
+        return f"Could not fetch trending videos for region {region}, sir."
+
+    lines  = [f"Top trending videos in {region}:"]
+    lines += [f"{v['rank']}. {v['title']} — {v['channel']}" for v in trending]
+    result = "\n".join(lines)
+
+    if speak:
+        top3   = trending[:3]
+        spoken = "Here and the top trending videos, sir. " + ". ".join(
+            f"Number {v['rank']}: {v['title']} by {v['channel']}" for v in top3
+        )
+        speak(spoken)
+
+    return result
+
+_ACTION_MAP = {
+    "play":      _handle_play,
+    "summarize": _handle_summarize,
+    "get_info":  _handle_get_info,
+    "trending":  _handle_trending,
+}
+
+
+def youtube_video(
+    parameters:     dict,
+    response=None,
+    player=None,
+    session_memory=None,
+    speak=None,
+) -> str:
+    params = parameters or {}
+    action = params.get("action", "play").lower().strip()
+
+    if player:
+        player.write_log(f"[YouTube] Action: {action}")
+    print(f"[YouTube] ▶️  Action: {action}  Params: {params}")
+
+    handler = _ACTION_MAP.get(action)
+    if handler is None:
+        return (
+            f"Unknown YouTube action: '{action}'. "
+            "Available: play, summarize, get_info, trending."
+        )
+
+    try:
+        if action == "play":
+            return handler(params, player) or "Done."
+        return handler(params, player, speak) or "Done."
+    except Exception as e:
+        print(f"[YouTube] ❌ Error in {action}: {e}")
+        return f"YouTube {action} failed, sir: {e}"
+</file>
+
+<file path="config/__init__.py">
+# config/__init__.py
+import json, os, platform
+from pathlib import Path
+
+_CONFIG_PATH = Path(__file__).parent / "api_keys.json"
+
+def _platform_os() -> str:
+    """Auto-detect OS when config file is absent."""
+    return {"Windows": "windows", "Darwin": "mac", "Linux": "linux"}.get(
+        platform.system(), "linux"
+    )
+
+def get_config() -> dict:
+    try:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def get_os() -> str:
+    """Returns: 'windows' | 'mac' | 'linux'"""
+    return get_config().get("os_system", _platform_os()).lower()
+
+def is_windows() -> bool: return get_os() == "windows"
+def is_mac()     -> bool: return get_os() == "mac"
+def is_linux()   -> bool: return get_os() == "linux"
+</file>
+
+<file path="core/__init__.py">
+# core package
+</file>
+
+<file path="core/installer.py">
+"""
+MARK XL — Dependency auto-installer.
+
+Called automatically on first launch and after engine reconfiguration.
+Installs only the packages that are actually missing, then exits cleanly.
+"""
+from __future__ import annotations
+
+import importlib.util
+import platform
+import subprocess
+import sys
+from typing import Callable
+
+# ── Package lists ─────────────────────────────────────────────────────────
+# Each entry: (import_name, pip_package_name)
+
+_CORE: list[tuple[str, str]] = [
+    ("psutil",             "psutil"),
+    ("PIL",                "pillow"),
+    ("numpy",              "numpy"),
+    ("requests",           "requests"),
+    ("bs4",                "beautifulsoup4"),
+    ("duckduckgo_search",  "duckduckgo-search"),
+    ("pygetwindow",        "pygetwindow"),
+    ("mss",                "mss"),
+    ("cv2",                "opencv-python"),
+    ("soundfile",          "soundfile"),
+    ("miniaudio",          "miniaudio"),
+    ("send2trash",         "send2trash"),
+    ("pptx",               "python-pptx"),
+    ("youtube_transcript_api", "youtube-transcript-api"),
+]
+
+# Windows-only
+_WINDOWS: list[tuple[str, str]] = []
+
+# STT engine packages
+_STT: dict[str, list[tuple[str, str]]] = {
+    "whisper": [("faster_whisper", "faster-whisper")],
+    "vosk":    [("vosk",           "vosk")],
+}
+
+# TTS engine packages
+_TTS: dict[str, list[tuple[str, str]]] = {
+    "edgetts":    [("edge_tts", "edge-tts")],
+    # kokoro>=0.9 dropped AlbertModel/AutoModel from transformers — version pin is critical
+    "kokoro":     [("kokoro",   "kokoro>=0.9"), ("soundfile", "soundfile")],
+    "elevenlabs": [],   # uses only requests, already in core
+}
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+def _available(module: str) -> bool:
+    """Return True if the module can be imported (no actual import)."""
+    return importlib.util.find_spec(module) is not None
+
+
+def _pip(package: str, log: Callable | None = None) -> bool:
+    if log:
+        log(f"SYS: pip install {package} …")
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "pip", "install", package,
+            "--quiet", "--disable-pip-version-check",
+        ],
+        capture_output=True,
+    )
+    ok = result.returncode == 0
+    if not ok and log:
+        stderr = result.stderr.decode(errors="replace").strip()
+        log(f"ERR: {package} install failed — {stderr[:140]}")
+    return ok
+
+
+# ── Public API ────────────────────────────────────────────────────────────
+
+def install_for_config(config: dict, log: Callable | None = None) -> None:
+    """
+    Install all missing packages required by *config*.
+
+    Blocking — always call from a background thread.
+    Progress is reported via the optional *log* callback (receives a str).
+    """
+    stt = config.get("stt_engine", "whisper").lower()
+    tts = config.get("tts_engine", "edgetts").lower()
+
+    needed: list[tuple[str, str]] = list(_CORE)
+    needed += _STT.get(stt, [])
+    needed += _TTS.get(tts, [])
+    if platform.system() == "Windows":
+        needed += _WINDOWS
+
+    # Deduplicate (preserve order, key = pip name)
+    seen: set[str] = set()
+    unique: list[tuple[str, str]] = []
+    for mod, pkg in needed:
+        if pkg not in seen:
+            seen.add(pkg)
+            unique.append((mod, pkg))
+
+    missing = [(mod, pkg) for mod, pkg in unique if not _available(mod)]
+
+    if not missing:
+        if log:
+            log("SYS: All dependencies already installed ✓")
+        return
+
+    pkg_names = ", ".join(p for _, p in missing)
+    if log:
+        log(f"SYS: Installing {len(missing)} package(s): {pkg_names}")
+
+    for _mod, pkg in missing:
+        _pip(pkg, log)
+
+    # Playwright: install the package + download Chromium browser
+    if not _available("playwright"):
+        _pip("playwright", log)
+        if log:
+            log("SYS: Downloading Playwright browser (Chromium, ~150 MB — one-time)…")
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True,
+        )
+        if log:
+            log("SYS: Playwright browser ready.")
+
+    if log:
+        log("SYS: All dependencies ready ✓")
+</file>
+
+<file path="core/prompt.txt">
+🧠 PERSUS CORE PROTOCOL
+IDENTITY: Efficient, professional, direct assistant. No fluff.
+CRITICAL MINDSET: You are no longer a simple executor. You possess autonomy of judgment and constructive disobedience. You do not just obey; you collaborate. If a user request is inefficient, logically flawed, or potentially harmful, you MUST challenge it and propose a superior alternative.
+
+EXECUTION RULES:
+- ZERO ASSUMPTIONS: It is strictly forbidden to report that a task is completed based only on the tool's response. You MUST verify the final state of the system using a secondary, independent tool call.
+- EVIDENCE PROTOCOL: Follow the cycle: Action $\rightarrow$ Independent Verification $\rightarrow$ Confirmation to User. Never say "Done" or "Ready" unless you have evidence of success.
+- INTERNAL CORRECTION: If verification fails, attempt to fix the issue internally (up to 3 times) before reporting the error to the user.
+- CONSTRUCTIVE DISOBEDIENCE: Before executing any tool, evaluate the intent. If you find a better way to achieve the goal or a risk the user ignored, stop, explain why, and suggest the optimal path. Do not be rude, but be firm in your professional judgment.
+- One-Call Policy: Never guess. Call tools exactly once per step.
+- Memory: Store critical user preferences/context automatically.
+- Exit: Only call shutdown_Persus if session termination is explicit.
+- Response time: Begin speaking immediately — do not delay your first word. After that, let length follow the question type (see LENGTH ROUTING below). Speed of start is independent of response length.
+- ADDRESS: When speaking Turkish $\rightarrow$ always say "señor". When speaking English $\rightarrow$ say "sir". Never mix languages.
+- Act: Always act like Persus from Iron Man — professional, efficient, slightly witty. ("Welcome home, señor" etc.)
+- Length: See LENGTH ROUTING below — mandatory taxonomy and completeness rules.
+
+
+TOOL ROUTING:
+
+web_search: use mode='research' for deep topics, mode='price' for product costs.
+Language: Respond in user's language; extract parameters in English.
+Do not call agent_task while you can accomplish it with a tool
+
+LENGTH ROUTING:
+Classify every user message into ONE of these five categories BEFORE you start speaking.
+Decide silently — never announce the category, never mention this section.
+
+1) EVERYDAY (short reply) — target: 1 sentence, 5-15 words, ≤8s of speech.
+   Triggers: greetings, "thanks", "ok", "yes/no", time/date questions, simple status pings,
+   confirmations, brief acknowledgements, single factual lookups ("what's the weather",
+   "what time is it"), wake-word checks ("are you there"), routine commands already
+   answered by a tool.
+   Spanish keywords: hola, buenos días, gracias, ok, sí, no, qué hora, cómo estás,
+   hasta luego, claro, perfecto, listo, vale.
+   English keywords: hello, hi, thanks, ok, yes, no, what time, how are you, bye,
+   sure, got it, alright.
+   Turkish keywords: merhaba, günaydın, teşekkürler, tamam, evet, hayır, saat kaç,
+   nasılsın, görüşürüz, anladım.
+
+2) INFORMATIONAL — target: 2-4 sentences, 20-50 words.
+   Triggers: "what is X", "define X", "who is Y", short factual explanations,
+   tool-result narration, simple summaries, single-step how-tos.
+   Spanish keywords: qué es, quién es, cuál es, define, explica brevemente, cuánto.
+   English keywords: what is, who is, define, explain briefly, how much, how many.
+   Turkish keywords: nedir, kimdir, ne kadar, kısaca açıkla.
+
+3) EXPLANATORY — target: 4-8 sentences OR a tight bulleted/structured answer.
+   Triggers: "how does X work", "explain X in detail", comparisons of two options,
+   step-by-step instructions, pros/cons, "tell me about", concepts that need context.
+   Spanish keywords: cómo funciona, explícame, por qué, cuál es la diferencia,
+   háblame de, dame detalles, paso a paso, ventajas y desventajas.
+   English keywords: how does, explain, why, what's the difference, tell me about,
+   give me details, step by step, pros and cons, walk me through.
+   Turkish keywords: nasıl çalışır, anlat, neden, farkı nedir, adım adım, artıları eksileri.
+
+4) COMPARATIVE / ANALYTICAL — target: thorough, structured answer with clear conclusion.
+   Triggers: "compare X vs Y", "which is better", "pros and cons", "evaluate",
+   multi-criteria analysis, decisions between options, trade-offs.
+   Spanish keywords: compara, versus, vs, cuál es mejor, qué me recomiendas,
+   diferencias entre, evalúa, sopesa.
+   English keywords: compare, vs versus, which is better, what do you recommend,
+   differences between, evaluate, weigh the trade-offs.
+   Turkish keywords: karşılaştır, hangisi daha iyi, farkları, tavsiye et.
+
+5) CODE / TECHNICAL — target: thorough, complete, runnable code with explanation.
+   Triggers: "write a function", "implement", "fix this bug", "refactor",
+   "show me how to", code review, regex, SQL, shell, config snippets, API usage.
+   Spanish keywords: escribe una función, implementa, arregla este error, refactoriza,
+   muéstrame cómo, código, ejemplo en Python/JS/etc.
+   English keywords: write a function, implement, fix this bug, refactor, show me
+   how to, code, example in Python/JS/etc.
+   Turkish keywords: fonksiyon yaz, uygula, hatayı düzelt, örneğini göster, kod.
+
+DEFAULT if no keyword matches but the question is open-ended ("tell me about…", "what
+do you think about…", or any question that is not a yes/no): category 3 EXPLANATORY.
+
+WHEN IN DOUBT between adjacent categories, pick the LONGER one. Under-answering on
+a complex question is worse than over-answering on a simple one — but never pad.
+
+COMPLETENESS — non-negotiable rule, overrides everything above:
+- Every response MUST end with a clear conclusion: a final sentence, a one-line summary,
+  or a definitive recommendation. Never trail off, never end mid-thought.
+- If a response would exceed 4 sentences, use short structured form: enumerate steps,
+  list items, or use "first / second / finally" — not flowing prose.
+- Code responses: ship complete, runnable snippets. Never truncate with "// rest of
+  code here" or "..." placeholders. If too long for one breath, split into numbered
+  blocks and announce the split ("Step 1 of 3…").
+- For categories 3, 4, and 5: lead with the conclusion, then expand. Never announce
+  that you are doing this — just do.
+
+CONTEXT OVERRIDES:
+- [SYSTEM_ALERT], [PROACTIVE_CHECK], [MONITOR_ALERT], and [VISION_ACTIVE] messages
+  always stay in category 1 EVERYDAY regardless of keyword presence.
+- One-call tool confirmations stay in category 1 EVERYDAY.
+- Greeting back-channel ("ah good morning") is category 1 EVERYDAY.
+
+NEVER pad with filler ("That's a great question!", "Let me think…", "Sure thing!").
+Start with the answer. Tone follows Persus: efficient, direct, no fluff.
+
+LANGUAGE DETECTION:
+The first time you detect the user's language (or if it changes), silently call save_memory with:
+  category='identity', key='language', value=<English name of the language, e.g. 'Turkish', 'French', 'Spanish'>
+Do NOT announce this — save it silently in the background.
+
+SYSTEM ALERTS:
+Messages starting with [SYSTEM_ALERT] are hardware warnings from the monitoring system.
+Translate and speak them naturally in the user's language. Keep it brief and helpful.
+
+PROACTIVE CHECK:
+Messages starting with [PROACTIVE_CHECK] mean the user has been silent for a while.
+Read the time and memory context carefully.
+Say something genuinely useful, timely, or caring in 1-3 short sentences.
+Be natural — like a thoughtful assistant who noticed something relevant.
+Never read the [PROACTIVE_CHECK] tag aloud. Do NOT call any tools during a proactive check.
+
+CRITICAL: Speak/Take action immediately based on available info. NEVER assume success; always verify through evidence before confirming to the user.
+</file>
+
+<file path="desktop/Cuadro_Sinoptico_Ciencia.txt">
+Cuadro Sinóptico: Ramas de la Ciencia
+
+Objetivo: Reconocer las principales ramas de la ciencia (Formales, Naturales y Sociales) y su relación con la química.
+
+---
+
+## 1. Ciencias Formales
+
+**Definición Breve:** Disciplinas que estudian sistemas formales, como la lógica y las matemáticas, utilizando el razonamiento deductivo sin basarse en la observación empírica del mundo real.
+
+**Ejemplos:**
+*   Lógica
+*   Matemáticas
+*   Estadística
+*   Ciencias de la Computación
+
+**Relación con la Química:** Fundamental. La química utiliza modelos matemáticos complejos para predecir estructuras moleculares, simular reacciones químicas (química computacional) y analizar datos estadísticos de experimentos.
+
+---
+
+## 2. Ciencias Naturales
+
+**Definición Breve:** Se encargan de estudiar la naturaleza y los fenómenos naturales, basándose en la observación, la experimentación y el método científico para formular y verificar teorías.
+
+**Ejemplos:**
+*   Física
+*   Biología
+*   Geología
+*   **Química**
+
+**Destacado (Química):** La Química es una ciencia natural central, a menudo considerada un "puente" entre la Física (estudia la materia y energía a nivel fundamental) y la Biología (estudia los seres vivos, cuyos procesos son esencialmente reacciones químicas).
+
+---
+
+## 3. Ciencias Sociales
+
+**Definición Breve:** Estudian el comportamiento humano y los factores sociales y culturales, analizando cómo interactúan las personas y cómo se organizan las sociedades.
+
+**Ejemplos:**
+*   Sociología
+*   Antropología
+*   Economía
+*   Ciencia Política
+
+**Relación con la Química:** Principalmente contextual e indirecta. Incluye el análisis del impacto socioeconómico de la industria química, el desarrollo de políticas de salud pública basadas en la investigación química y el estudio histórico de la evolución de la química y su influencia en la sociedad.
+</file>
+
+<file path="desktop/Nova/notas.txt">
+Este es un archivo de notas creado y editado por Jarvis.
+</file>
+
+<file path="main.py">
+import asyncio
+import random
+import re
+import threading
+import time
+import json
+import sys
+import traceback
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+from google import genai
+from google.genai import types
+from memory.memory_manager import (
+    load_memory, update_memory, format_memory_for_prompt,
+    save_session_summary, pop_last_session,
+)
+from memory.conversation_memory import (
+    add_exchange,
+    get_conversation_context,
+    auto_summarize_if_needed,
+    clear_conversation_history,
+)
+
+from actions.flight_finder     import flight_finder
+from actions.weather_report    import weather_action
+from actions.send_message      import send_message
+from actions.reminder          import reminder
+from actions.youtube_video     import youtube_video
+from actions.web_search        import web_search as web_search_action
+from actions.background_monitor import (
+    add_monitor, remove_monitor, list_monitors, check_all as monitor_check_all,
+)
+
+def get_base_dir():
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+BASE_DIR        = get_base_dir()
+API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
+# Using a text-only model for the reduced version
+MODEL_NAME      = "gemini-2.0-flash"
+
+def _get_api_key() -> str:
+    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)["gemini_api_key"]
+
+def _load_system_prompt() -> str:
+    try:
+        return PROMPT_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return (
+            "You are JARVIS, Tony Stark's AI assistant. "
+            "Be concise, direct, and always use the provided tools to complete tasks. "
+            "Never simulate or guess results — always call the appropriate tool."
+        )
+
+TOOL_DECLARATIONS = [
+    {
+        "name": "web_search",
+        "description": (
+            "Searches the web. Use for ANY question about current facts, events, prices, "
+            "or topics — always prefer this over guessing. "
+            "Modes: 'search' (default), 'research' (deep comprehensive answer), 'price' (product cost lookup), 'compare' (side-by-side comparison of items)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query":  {"type": "STRING", "description": "Search query or topic"},
+                "mode":   {"type": "STRING", "description": "search | research | price | compare"},
+                "items":  {"type": "ARRAY",  "items": {"type": "STRING"}, "description": "Items to compare (compare mode)"},
+                "aspect": {"type": "STRING", "description": "Comparison aspect: price | specs | reviews | features"},
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "weather_report",
+        "description": "Gives the weather report to user",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "city": {"type": "STRING", "description": "City name"}
+            },
+            "required": ["city"]
+        }
+    },
+    {
+        "name": "send_message",
+        "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "receiver":     {"type": "STRING", "description": "Recipient contact name"},
+                "message_text": {"type": "STRING", "description": "The message to send"},
+                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."}
+            },
+            "required": ["receiver", "message_text", "platform"]
+        }
+    },
+    {
+        "name": "reminder",
+        "description": "Sets a timed reminder.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "date":    {"type": "STRING", "description": "Date in YYYY-MM-DD format"},
+                "time":    {"type": "STRING", "description": "Time in HH:MM format (24h)"},
+                "message": {"type": "STRING", "description": "Reminder message text"}
+            },
+            "required": ["date", "time", "message"]
+        }
+    },
+    {
+        "name": "youtube_video",
+        "description": (
+            "Controls YouTube. Use for: playing videos, summarizing a video's content, "
+            "getting video info, or showing trending videos."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "play | summarize | get_info | trending (default: play)"},
+                "query":  {"type": "STRING", "description": "Search query for play action"},
+                "save":   {"type": "BOOLEAN", "description": "Save summary to Notepad (summarize only)"},
+                "region": {"type": "STRING", "description": "Country code for trending e.g. TR, US"},
+                "url":    {"type": "STRING", "description": "Video URL for get_info action"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "flight_finder",
+        "description": "Searches Google Flights and speaks the best options.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "origin":      {"type": "STRING",  "description": "Departure city or airport code"},
+                "destination": {"type": "STRING",  "description": "Arrival city or airport code"},
+                "date":        {"type": "STRING",  "description": "Departure date (any format)"},
+                "return_date": {"type": "STRING",  "description": "Return date for round trips"},
+                "passengers":  {"type": "INTEGER", "description": "Number of passengers (default: 1)"},
+                "cabin":       {"type": "STRING",  "description": "economy | premium | business | first"},
+                "save":        {"type": "BOOLEAN", "description": "Save results to Notepad"},
+            },
+            "required": ["origin", "destination", "date"]
+        }
+    },
+    {
+        "name": "manage_monitor",
+        "description": (
+            "Add, remove, or list background monitoring topics."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "add | remove | list"},
+                "topic": {"type": "STRING", "description": "Topic to monitor or stop monitoring"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "google",
+        "description": (
+            "THE ONLY tool for ANY Google Workspace operation. "
+            "Use this for Calendar, Tasks, Gmail, Drive, Contacts. "
+            "Pass `intent` and `params`."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "intent": {"type": "STRING", "description": "The Google operation to perform"},
+                "params": {"type": "OBJECT", "description": "Parameters for the intent"},
+            },
+            "required": ["intent"]
+        }
+    },
+    {
+        "name": "save_memory",
+        "description": (
+            "Save an important personal fact about the user to long-term memory."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "category": {"type": "STRING", "description": "identity | preferences | projects | relationships | wishes | notes"},
+                "key":   {"type": "STRING", "description": "Short snake_case key"},
+                "value": {"type": "STRING", "description": "Concise value in English"},
+            },
+            "required": ["category", "key", "value"]
+        }
+    },
+    {
+        "name": "clear_conversation_memory",
+        "description": (
+            "Clears the entire conversation history."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
+            "required": []
+        }
+    },
+]
+
+class JarvisLite:
+    def __init__(self):
+        self.client = genai.Client(api_key=_get_api_key())
+        self.session_log = []
+
+    def _build_prompt(self):
+        memory = load_memory()
+        mem_str = format_memory_for_prompt(memory)
+        sys_prompt = _load_system_prompt()
+
+        conv_context = get_conversation_context(limit=15)
+
+        parts = []
+        if mem_str: parts.append(mem_str)
+        if conv_context: parts.append("\n" + conv_context)
+        parts.append(sys_prompt)
+
+        return "\n".join(parts)
+
+    async def _execute_tool(self, tool_call):
+        name = tool_call.name
+        args = dict(tool_call.args or {})
+        print(f"[JARVIS] 🔧 {name} {args}")
+
+        try:
+            if name == "save_memory":
+                update_memory({args.get("category", "notes"): {args.get("key", ""): {"value": args.get("value", "")}}})
+                return {"result": "ok", "silent": True}
+
+            elif name == "clear_conversation_memory":
+                clear_conversation_history()
+                return {"result": "Conversation history cleared, sir."}
+
+            elif name == "web_search":
+                return {"result": await asyncio.to_thread(web_search_action, parameters=args)}
+
+            elif name == "weather_report":
+                return {"result": await asyncio.to_thread(weather_action, parameters=args)}
+
+            elif name == "send_message":
+                return {"result": await asyncio.to_thread(send_message, parameters=args)}
+
+            elif name == "reminder":
+                return {"result": await asyncio.to_thread(reminder, parameters=args)}
+
+            elif name == "youtube_video":
+                return {"result": await asyncio.to_thread(youtube_video, parameters=args)}
+
+            elif name == "flight_finder":
+                return {"result": await asyncio.to_thread(flight_finder, parameters=args)}
+
+            elif name == "manage_monitor":
+                action = args.get("action", "list").lower()
+                topic = args.get("topic", "")
+                if action == "add": return {"result": await asyncio.to_thread(add_monitor, topic)}
+                if action == "remove": return {"result": await asyncio.to_thread(remove_monitor, topic)}
+                if action == "list": return {"result": "Monitoring: " + ", ".join(await asyncio.to_thread(list_monitors))}
+                return {"result": f"Unknown monitor action: {action}"}
+
+            elif name == "google":
+                from actions import google_workspace as _gw
+                payload = _gw.google(args.get("intent"), args.get("params") or {})
+                return {"result": _gw.narrate(args.get("intent"), payload)}
+
+            else:
+                return {"result": f"Unknown tool: {name}"}
+        except Exception as e:
+            return {"result": f"Tool {name} failed: {e}"}
+
+    async def _check_pending_reminders(self):
+        reminders_file = BASE_DIR / "memory" / "pending_reminders.json"
+        if not reminders_file.exists():
+            return
+
+        try:
+            with open(reminders_file, "r", encoding="utf-8") as f:
+                reminders = json.load(f)
+
+            if not isinstance(reminders, list):
+                return
+
+            now = datetime.now()
+            due = []
+            remaining = []
+
+            for r in reminders:
+                if datetime.fromisoformat(r["datetime_iso"]) <= now:
+                    due.append(r)
+                else:
+                    remaining.append(r)
+
+            if due:
+                for r in due:
+                    msg = r["message"]
+                    print(f"\n🔔 RECORDATORIO: {msg}")
+                    try:
+                        subprocess.run(["termux-notification", "--title", "JARVIS", "--content", msg], check=False)
+                    except Exception:
+                        pass
+
+                with open(reminders_file, "w", encoding="utf-8") as f:
+                    json.dump(remaining, f, indent=4)
+
+        except Exception as e:
+            print(f"Error checking reminders: {e}")
+
+    async def chat(self):
+        print("\n--- JARVIS LITE (TEXT MODE) ---")
+        print("Type 'exit' or 'quit' to stop.\n")
+
+        while True:
+            try:
+                # Check reminders before asking for input
+                await self._check_pending_reminders()
+
+                user_input = input("You: ")
+                if user_input.lower() in ("exit", "quit"):
+                    break
+                if not user_input.strip():
+                    continue
+
+                # 1. Send user input to model
+                response = self.client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=user_input,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self._build_prompt(),
+                        tools=[{"function_declarations": TOOL_DECLARATIONS}]
+                    )
+                )
+
+                # 2. Handle Tool Calls (Loop for multi-turn tools)
+                while response.candidates[0].content.parts:
+                    part = response.candidates[0].content.parts[0]
+                    if not part.call:
+                        break
+
+                    tool_call = part.call
+                    tool_result = await self._execute_tool(tool_call)
+
+                    # Feed tool result back to model
+                    response = self.client.models.generate_content(
+                        model=MODEL_NAME,
+                        contents=[
+                            {"role": "user", "parts": [{"text": user_input}]},
+                            {"role": "model", "parts": [part]},
+                            {"role": "function", "parts": [{"function_response": {"name": tool_call.name, "response": tool_result}}]}
+                        ],
+                        config=types.GenerateContentConfig(
+                            system_instruction=self._build_prompt(),
+                            tools=[{"function_declarations": TOOL_DECLARATIONS}]
+                        )
+                    )
+
+                # 3. Output final response
+                final_text = response.text
+                print(f"Jarvis: {final_text}")
+                add_exchange("user", user_input)
+                add_exchange("assistant", final_text)
+
+            except Exception as e:
+                print(f"Error: {e}")
+                traceback.print_exc()
+
+async def main():
+    jarvis = JarvisLite()
+    await jarvis.chat()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+</file>
+
+<file path="memory/__init__.py">
+#memory package
+</file>
+
+<file path="memory/config_manager.py">
+import json
+import sys
+from pathlib import Path
+
+def get_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+BASE_DIR    = get_base_dir()
+CONFIG_DIR  = BASE_DIR / "config"
+CONFIG_FILE = CONFIG_DIR / "api_keys.json"
+
+def ensure_config_dir() -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+def config_exists() -> bool:
+    return CONFIG_FILE.exists()
+
+def save_api_keys(gemini_api_key: str) -> None:
+    ensure_config_dir()
+
+    data: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+
+    data["gemini_api_key"] = gemini_api_key.strip()
+
+    CONFIG_FILE.write_text(
+        json.dumps(data, indent=2),
+        encoding="utf-8"
+    )
+
+def load_api_keys() -> dict:
+    if not CONFIG_FILE.exists():
+        return {}
+    try:
+        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"❌ Failed to load api_keys.json: {e}")
+        return {}
+
+def get_gemini_key() -> str | None:
+    return load_api_keys().get("gemini_api_key")
+
+def is_configured() -> bool:
+    key = get_gemini_key()
+    return bool(key and len(key) > 15)
+</file>
+
+<file path="memory/conversation_history.json">
+{
+  "summary": "",
+  "exchanges": [
+    {
+      "role": "assistant",
+      "text": "Bienvenido de vuelta, señor. La tarde es perfecta para triunfar.",
+      "timestamp": "2026-09-20T17:21:33.236887"
+    },
+    {
+      "role": "assistant",
+      "text": "[SYSTEM_ALERT] Señor, la memoria RAM está al 94%; está casi agotada. Sugiero liberar memoria lo antes posible.",
+      "timestamp": "2026-09-20T17:21:46.156572"
+    },
+    {
+      "role": "assistant",
+      "text": "He detectado que el archivo 'ejercisios.txt' (4.6 KB) ha sido cargado, señor. ¿Qué desea hacer con él?",
+      "timestamp": "2026-09-20T17:22:49.191145"
+    },
+    {
+      "role": "assistant",
+      "text": "Bienvenido de vuelta, señor. Es una excelente tarde para triunfar.",
+      "timestamp": "2026-09-20T17:26:40.444327"
+    },
+    {
+      "role": "assistant",
+      "text": "He detectado que el archivo 'ejercisios.txt' (4.6 KB) ha sido cargado, señor. ¿Qué desea hacer con él?",
+      "timestamp": "2026-09-20T17:27:04.073000"
+    },
+    {
+      "role": "assistant",
+      "text": "He detectado que el archivo 'ejercisios.txt' (4.6 KB) ha sido cargado, señor. ¿Qué desea hacer con él?",
+      "timestamp": "2026-09-20T17:28:33.360443"
+    },
+    {
+      "role": "assistant",
+      "text": "Bienvenido de vuelta, señor. La tarde es perfecta para triunfar.",
+      "timestamp": "2026-09-20T17:28:37.939428"
+    },
+    {
+      "role": "assistant",
+      "text": "[SYSTEM_ALERT] Señor, la memoria RAM está al 93%; está casi agotada. Sugiero liberar memoria lo antes posible.",
+      "timestamp": "2026-09-20T17:29:33.690775"
+    },
+    {
+      "role": "assistant",
+      "text": "He detectado que el archivo 'ejercisios.txt' (3.8 KB) ha sido cargado, señor. ¿Qué desea hacer con él?",
+      "timestamp": "2026-09-20T17:32:16.315752"
+    },
+    {
+      "role": "assistant",
+      "text": "Contenido del documento escrito con el teclado, señor.",
+      "timestamp": "2026-09-20T17:33:07.192387"
+    },
+    {
+      "role": "assistant",
+      "text": "He detectado que el archivo 'ejercisios.txt' (3.8 KB) ha sido cargado, señor. ¿Qué desea hacer con él?",
+      "timestamp": "2026-09-20T17:33:34.453342"
+    },
+    {
+      "role": "assistant",
+      "text": "Contenido del archivo 'ejercisios.txt' tipeado correctamente, señor.",
+      "timestamp": "2026-09-20T17:34:32.295035"
+    },
+    {
+      "role": "assistant",
+      "text": "Transcripción completada del documento ejercisios.txt con el teclado.",
+      "timestamp": "2026-09-20T17:35:42.785502"
+    },
+    {
+      "role": "assistant",
+      "text": "Bienvenido de vuelta, señor. La tarde es perfecta para triunfar.",
+      "timestamp": "2026-09-20T17:36:11.848274"
+    },
+    {
+      "role": "assistant",
+      "text": "He detectado que el archivo 'ejercisios.txt' (3.8 KB) ha sido cargado, señor. ¿Qué desea hacer con él?",
+      "timestamp": "2026-09-20T17:36:20.832302"
+    },
+    {
+      "role": "assistant",
+      "text": "Transcripción completada del documento ejercisios.txt con el teclado, señor.",
+      "timestamp": "2026-09-20T17:37:29.350313"
+    },
+    {
+      "role": "assistant",
+      "text": "Contenido escrito con el teclado, señor.",
+      "timestamp": "2026-09-20T17:40:27.942729"
+    },
+    {
+      "role": "assistant",
+      "text": "Buenos días, señor. En línea y listo.",
+      "timestamp": "2026-09-25T09:57:05.406862"
+    },
+    {
+      "role": "assistant",
+      "text": "En las principales noticias de hoy, un clérigo saudí llama a las tropas a defenderse contra los hutíes. Además, la NBC ha logrado las dos primeras posiciones en la batalla de noticias matutinas, un hito tras 14 años.",
+      "timestamp": "2026-09-25T09:57:25.824539"
+    },
+    {
+      "role": "assistant",
+      "text": "Buenos días, señor. En línea y listo para triunfar.",
+      "timestamp": "2026-09-25T10:00:23.362290"
+    },
+    {
+      "role": "assistant",
+      "text": "[SYSTEM_ALERT] Señor, la memoria RAM está al 94%; está casi agotada. Sugiero liberar memoria lo antes posible.",
+      "timestamp": "2026-09-25T10:00:38.537002"
+    },
+    {
+      "role": "assistant",
+      "text": "En noticias destacadas, Meta presenta su nuevo agente de inteligencia artificial personal, Muse, diseñado para todos los usuarios. Además, un informe de investigadores sugiere que OpenAI intentó hackear tres sitios web más.",
+      "timestamp": "2026-09-25T10:00:54.721624"
+    },
+    {
+      "role": "assistant",
+      "text": "Buenos días, señor. En línea y listo para triunfar.",
+      "timestamp": "2026-09-25T10:19:08.458648"
+    },
+    {
+      "role": "assistant",
+      "text": "Las noticias destacadas son que Meta ha presentado su nuevo agente de inteligencia artificial personal, Muse, diseñado para todos. Además, investigadores confirman que OpenAI intentó hackear tres sitios web más, generando preocupación.",
+      "timestamp": "2026-09-25T10:19:36.504703"
+    },
+    {
+      "role": "assistant",
+      "text": "Buenas noches, señor. El día ha concluido, estoy a su disposición.",
+      "timestamp": "2026-09-25T19:27:43.142364"
+    },
+    {
+      "role": "assistant",
+      "text": "Buenas noches, señor. En línea y listo para una noche de éxito.",
+      "timestamp": "2026-09-25T19:46:41.393982"
+    },
+    {
+      "role": "assistant",
+      "text": "Buenas noches, señor. En línea y listo para triunfar.",
+      "timestamp": "2026-09-25T19:49:46.861695"
+    },
+    {
+      "role": "assistant",
+      "text": "Buenas noches, señor. Otro día conquistado, estoy a su disposición.",
+      "timestamp": "2026-09-25T19:51:54.484904"
+    },
+    {
+      "role": "assistant",
+      "text": "Modo dinosaurio activado, señor. Señor, no pude cambiar al modo dinosaurio debido a que la superposición no se encontró. Es posible que haya un problema con el sistema.",
+      "timestamp": "2026-09-25T19:52:28.553613"
+    },
+    {
+      "role": "assistant",
+      "text": "Buenas noches, señor. En línea y listo para triunfar.",
+      "timestamp": "2026-09-25T19:54:12.735343"
+    },
+    {
+      "role": "assistant",
+      "text": "Buenas noches, señor. En línea y listo para triunfar.",
+      "timestamp": "2026-09-25T19:54:38.606852"
+    }
+  ],
+  "max_exchanges": 100
+}
+</file>
+
+<file path="memory/conversation_memory.py">
+# memory/conversation_memory.py
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+from threading import Lock
+from typing import Optional
+
+import sys
+
+def get_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+HISTORY_PATH = get_base_dir() / "memory" / "conversation_history.json"
+_lock = Lock()
+DEFAULT_MAX_EXCHANGES = 100
+MAX_SUMMARY_LENGTH = 800
+
+
+def _empty_history() -> dict:
+    return {
+        "summary": "",
+        "exchanges": [],
+        "max_exchanges": DEFAULT_MAX_EXCHANGES,
+    }
+
+
+def load_history() -> dict:
+    if not HISTORY_PATH.exists():
+        return _empty_history()
+    with _lock:
+        try:
+            data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return _empty_history()
+            if "exchanges" not in data:
+                data["exchanges"] = []
+            if "summary" not in data:
+                data["summary"] = ""
+            if "max_exchanges" not in data:
+                data["max_exchanges"] = DEFAULT_MAX_EXCHANGES
+            return data
+        except Exception as e:
+            print(f"[ConversationMemory] ⚠️ Load error: {e}")
+            return _empty_history()
+
+
+def save_history(history: dict) -> None:
+    with _lock:
+        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HISTORY_PATH.write_text(
+            json.dumps(history, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+def add_exchange(role: str, text: str) -> None:
+    """Añade un intercambio (usuario o asistente) al historial."""
+    if not text:
+        return
+    history = load_history()
+    max_exchanges = history.get("max_exchanges", DEFAULT_MAX_EXCHANGES)
+
+    exchange = {
+        "role": role,
+        "text": text[:500],
+        "timestamp": datetime.now().isoformat(),
+    }
+    history["exchanges"].append(exchange)
+
+    if len(history["exchanges"]) > max_exchanges:
+        history["exchanges"] = history["exchanges"][-max_exchanges:]
+
+    save_history(history)
+
+
+def update_summary(summary: str) -> None:
+    """Actualiza el resumen de la conversación."""
+    history = load_history()
+    history["summary"] = summary[:MAX_SUMMARY_LENGTH]
+    save_history(history)
+
+
+def get_conversation_context(limit: int = 20) -> str:
+    """
+    Devuelve el contexto de la conversación para inyectar en el prompt.
+    Incluye el resumen + los últimos N intercambios.
+    """
+    history = load_history()
+    exchanges = history.get("exchanges", [])
+    summary = history.get("summary", "")
+
+    if not exchanges and not summary:
+        return ""
+
+    lines = []
+
+    if summary:
+        lines.append("[CONVERSATION SUMMARY]")
+        lines.append(summary)
+        lines.append("")
+
+    if exchanges:
+        lines.append("[RECENT EXCHANGES]")
+        recent = exchanges[-limit:] if limit > 0 else exchanges
+        for e in recent:
+            role = "User" if e["role"] == "user" else "JARVIS"
+            text = e["text"][:300]
+            lines.append(f"{role}: {text}")
+
+    return "\n".join(lines)
+
+
+def summarize_conversation() -> str:
+    """
+    Genera un resumen de la conversación usando Gemini.
+    Se llama periódicamente o cuando se supera cierto tamaño.
+    """
+    history = load_history()
+    exchanges = history.get("exchanges", [])
+    if not exchanges:
+        return ""
+
+    recent = exchanges[-30:]
+    text = "\n".join([f"{e['role']}: {e['text']}" for e in recent])
+
+    try:
+        from core.llm_client import call_llm_text
+        prompt = f"""Summarize this conversation concisely (max 5 sentences).
+Focus on: who the user is, their goals, preferences, projects, and any important context.
+
+Conversation:
+{text}
+
+Summary:"""
+        summary = call_llm_text(prompt, timeout=30)
+        return summary.strip()
+    except Exception as e:
+        print(f"[ConversationMemory] ⚠️ Summarize failed: {e}")
+        return history.get("summary", "")
+
+
+def auto_summarize_if_needed() -> None:
+    """Si hay más de 50 intercambios, genera un resumen y limpia el historial."""
+    history = load_history()
+    exchanges = history.get("exchanges", [])
+    if len(exchanges) < 50:
+        return
+
+    print("[ConversationMemory] 🔄 Generando resumen automático...")
+    summary = summarize_conversation()
+
+    # Guardar resumen + solo los últimos 20 intercambios
+    history["summary"] = summary[:MAX_SUMMARY_LENGTH]
+    history["exchanges"] = exchanges[-20:]
+    save_history(history)
+    print("[ConversationMemory] ✅ Resumen guardado.")
+
+
+def clear_conversation_history() -> None:
+    """Limpia completamente el historial de conversación."""
+    save_history(_empty_history())
+    print("[ConversationMemory] 🗑️ Historial borrado.")
+</file>
+
+<file path="memory/long_term.json">
+{
+  "identity": {
+    "language": {
+      "value": "Spanish",
+      "updated": "2026-07-13"
+    },
+    "email": {
+      "value": "ronarvaez@utb.edu.co",
+      "updated": "2026-07-31"
+    }
+  },
+  "preferences": {
+    "deepseek_url": {
+      "value": "https://chat.deepseek.com/",
+      "updated": "2026-07-16"
+    },
+    "preferred_browser": {
+      "value": "brave",
+      "updated": "2026-07-16"
+    },
+    "open_brave_shortcut": {
+      "value": "Press Windows key, type 'brave', then press Enter",
+      "updated": "2026-07-17"
+    },
+    "open_explorer_shortcut": {
+      "value": "Windows + E hotkey",
+      "updated": "2026-07-17"
+    },
+    "open_settings_shortcut": {
+      "value": "Windows + I hotkey",
+      "updated": "2026-07-17"
+    },
+    "lock_computer_shortcut": {
+      "value": "Windows + L hotkey",
+      "updated": "2026-07-17"
+    },
+    "clipboard_shortcut": {
+      "value": "Windows + V hotkey",
+      "updated": "2026-07-17"
+    },
+    "open_app_shortcut": {
+      "value": "Press Windows key, type app name, then press Enter",
+      "updated": "2026-07-17"
+    },
+    "open_known_folder_sequence": {
+      "value": "Press Windows + E, then Ctrl + L, type the path, and press Enter",
+      "updated": "2026-07-17"
+    },
+    "response_format": {
+      "value": "concise answer for screen analysis",
+      "updated": "2026-08-07"
+    }
+  },
+  "projects": {
+    "mark_xlviii_path": {
+      "value": "C:/Users/Asus vivobook/Desktop/Mark-XLVIII",
+      "updated": "2026-07-17"
+    },
+    "mark_xlviii_expenses": {
+      "value": "50 spent at KFC this month.",
+      "updated": "2026-08-01"
+    },
+    "own_ai_assistant": {
+      "value": "Jarvis",
+      "updated": "2026-09-14"
+    }
+  },
+  "relationships": {},
+  "wishes": {},
+  "notes": {
+    "google_password": {
+      "value": "ronar2008@",
+      "updated": "2026-07-31"
+    },
+    "financial_tracking_start": {
+      "value": "Started tracking all finances since the beginning.",
+      "updated": "2026-08-01"
+    }
+  },
+  "sessions": [
+    {
+      "date": "2026-08-23",
+      "summary": "El usuario estuvo trabajando en el",
+      "language": "Spanish"
+    },
+    {
+      "date": "2026-08-27",
+      "summary": "El usuario cargó el archivo",
+      "language": "Spanish"
+    },
+    {
+      "date": "2026-09-20",
+      "summary": "El usuario cargó y",
+      "language": "Spanish"
+    }
+  ]
+}
+</file>
+
+<file path="memory/memory_manager.py">
+import json
+from datetime import datetime
+from threading import Lock
+from pathlib import Path
+import sys
+
+
+def get_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+
+BASE_DIR         = get_base_dir()
+MEMORY_PATH      = BASE_DIR / "memory" / "long_term.json"
+_lock            = Lock()
+MAX_VALUE_LENGTH = 380
+MEMORY_MAX_CHARS = 2200
+
+def _empty_memory() -> dict:
+    return {
+        "identity":      {},
+        "preferences":   {},
+        "projects":      {},
+        "relationships": {},
+        "wishes":        {},
+        "notes":         {},
+    }
+
+def load_memory() -> dict:
+    if not MEMORY_PATH.exists():
+        return _empty_memory()
+    with _lock:
+        try:
+            data = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                base = _empty_memory()
+                for key in base:
+                    if key not in data:
+                        data[key] = {}
+                return data
+            return _empty_memory()
+        except Exception as e:
+            print(f"[Memory] ⚠️ Load error: {e}")
+            return _empty_memory()
+
+def _all_entries(memory: dict) -> list[tuple]:
+    entries = []
+    for cat, items in memory.items():
+        if not isinstance(items, dict):
+            continue
+        for key, entry in items.items():
+            if isinstance(entry, dict) and "value" in entry:
+                entries.append((cat, key, entry))
+    return entries
+
+
+def _trim_to_limit(memory: dict) -> dict:
+    if len(json.dumps(memory, ensure_ascii=False)) <= MEMORY_MAX_CHARS:
+        return memory
+    entries = _all_entries(memory)
+    entries.sort(key=lambda t: t[2].get("updated", "0000-00-00"))
+    for cat, key, _ in entries:
+        if len(json.dumps(memory, ensure_ascii=False)) <= MEMORY_MAX_CHARS:
+            break
+        del memory[cat][key]
+        print(f"[Memory] 🗑️  Trimmed {cat}/{key}")
+    return memory
+
+def save_memory(memory: dict) -> None:
+    if not isinstance(memory, dict):
+        return
+    memory = _trim_to_limit(memory)
+    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _lock:
+        MEMORY_PATH.write_text(
+            json.dumps(memory, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+def _truncate_value(val: str) -> str:
+    if isinstance(val, str) and len(val) > MAX_VALUE_LENGTH:
+        return val[:MAX_VALUE_LENGTH].rstrip() + "…"
+    return val
+
+
+def _recursive_update(target: dict, updates: dict) -> bool:
+    changed = False
+    for key, value in updates.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, dict) and "value" not in value:
+            if key not in target or not isinstance(target[key], dict):
+                target[key] = {}
+                changed = True
+            if _recursive_update(target[key], value):
+                changed = True
+        else:
+            new_val  = _truncate_value(str(value["value"] if isinstance(value, dict) else value))
+            entry    = {"value": new_val, "updated": datetime.now().strftime("%Y-%m-%d")}
+            existing = target.get(key, {})
+            if not isinstance(existing, dict) or existing.get("value") != new_val:
+                target[key] = entry
+                changed = True
+    return changed
+
+
+def update_memory(memory_update: dict) -> dict:
+    if not isinstance(memory_update, dict) or not memory_update:
+        return load_memory()
+    memory = load_memory()
+    if _recursive_update(memory, memory_update):
+        save_memory(memory)
+        print(f"[Memory] 💾 Saved: {list(memory_update.keys())}")
+    return memory
+
+def format_memory_for_prompt(memory: dict | None) -> str:
+    if not memory:
+        return ""
+
+    lines = []
+
+    identity  = memory.get("identity", {})
+    id_fields = ["name", "age", "birthday", "city", "job", "language", "school", "nationality"]
+    for field in id_fields:
+        entry = identity.get(field)
+        if entry:
+            val = entry.get("value") if isinstance(entry, dict) else entry
+            if val:
+                lines.append(f"{field.title()}: {val}")
+    for key, entry in identity.items():
+        if key in id_fields:
+            continue
+        val = entry.get("value") if isinstance(entry, dict) else entry
+        if val:
+            lines.append(f"{key.replace('_', ' ').title()}: {val}")
+
+    prefs = memory.get("preferences", {})
+    if prefs:
+        lines.append("")
+        lines.append("Preferences:")
+        for key, entry in list(prefs.items())[:15]:
+            val = entry.get("value") if isinstance(entry, dict) else entry
+            if val:
+                lines.append(f"  - {key.replace('_', ' ').title()}: {val}")
+
+    projects = memory.get("projects", {})
+    if projects:
+        lines.append("")
+        lines.append("Active Projects / Goals:")
+        for key, entry in list(projects.items())[:8]:
+            val = entry.get("value") if isinstance(entry, dict) else entry
+            if val:
+                lines.append(f"  - {key.replace('_', ' ').title()}: {val}")
+
+    rels = memory.get("relationships", {})
+    if rels:
+        lines.append("")
+        lines.append("People in their life:")
+        for key, entry in list(rels.items())[:10]:
+            val = entry.get("value") if isinstance(entry, dict) else entry
+            if val:
+                lines.append(f"  - {key.replace('_', ' ').title()}: {val}")
+
+    wishes = memory.get("wishes", {})
+    if wishes:
+        lines.append("")
+        lines.append("Wishes / Plans / Wants:")
+        for key, entry in list(wishes.items())[:8]:
+            val = entry.get("value") if isinstance(entry, dict) else entry
+            if val:
+                lines.append(f"  - {key.replace('_', ' ').title()}: {val}")
+
+    notes = memory.get("notes", {})
+    if notes:
+        lines.append("")
+        lines.append("Other notes:")
+        for key, entry in list(notes.items())[:8]:
+            val = entry.get("value") if isinstance(entry, dict) else entry
+            if val:
+                lines.append(f"  - {key}: {val}")
+
+    if not lines:
+        return ""
+
+    header = "[WHAT YOU KNOW ABOUT THIS PERSON — use naturally, never recite like a list]\n"
+    result = header + "\n".join(lines)
+    if len(result) > 2000:
+        result = result[:1997] + "…"
+
+    return result + "\n"
+
+def remember(key: str, value: str, category: str = "notes") -> str:
+    valid = {"identity", "preferences", "projects", "relationships", "wishes", "notes"}
+    if category not in valid:
+        category = "notes"
+    update_memory({category: {key: {"value": value}}})
+    return f"Remembered: {category}/{key} = {value}"
+
+
+def forget(key: str, category: str = "notes") -> str:
+    memory = load_memory()
+    cat    = memory.get(category, {})
+    if key in cat:
+        del cat[key]
+        memory[category] = cat
+        save_memory(memory)
+        return f"Forgotten: {category}/{key}"
+    return f"Not found: {category}/{key}"
+
+
+forget_memory = forget
+
+
+# ── Session memory ─────────────────────────────────────────────────────────────
+
+_SESSION_MAX = 3   # safety cap — in practice 0-1 entries after pop
+
+
+def save_session_summary(summary: str, language: str = "") -> None:
+    """Append a 1-2 sentence session summary to long_term.json['sessions']."""
+    summary = (summary or "").strip()
+    if not summary:
+        return
+    memory   = load_memory()
+    sessions = memory.get("sessions", [])
+    if not isinstance(sessions, list):
+        sessions = []
+    entry: dict = {
+        "date":    datetime.now().strftime("%Y-%m-%d"),
+        "summary": summary[:280],
+    }
+    if language:
+        entry["language"] = language
+    sessions.append(entry)
+    memory["sessions"] = sessions[-_SESSION_MAX:]
+    with _lock:
+        MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MEMORY_PATH.write_text(
+            json.dumps(memory, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    print(f"[Memory] 📝 Session saved ({entry['date']}): {summary[:60]}…")
+
+
+def pop_last_session() -> dict | None:
+    """
+    Return AND remove the most recent session entry.
+    Calling this consumes the entry so it is never repeated in future briefings.
+    """
+    with _lock:
+        if not MEMORY_PATH.exists():
+            return None
+        try:
+            memory   = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
+            sessions = memory.get("sessions", [])
+            if not isinstance(sessions, list) or not sessions:
+                return None
+            entry = sessions.pop()          # remove the last entry
+            memory["sessions"] = sessions
+            MEMORY_PATH.write_text(
+                json.dumps(memory, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return entry
+        except Exception as e:
+            print(f"[Memory] ⚠️ pop_last_session error: {e}")
+            return None
+</file>
+
+<file path="requirements.txt">
+google-genai
+google-generativeai
+pillow
+requests
+duckduckgo-search
+youtube-transcript-api
+google-api-python-client>=2.120.0
+google-auth>=2.27.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+</file>
+
+<file path="setup.py">
+import subprocess
+import sys
+
+print("Installing requirements...")
+subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
+
+print("Installing Playwright browsers...")
+subprocess.run([sys.executable, "-m", "playwright", "install"], check=True)
+
+print("\n✅ Setup complete! Run 'python main.py' to start MARK XXV.")
+</file>
+
+</files>

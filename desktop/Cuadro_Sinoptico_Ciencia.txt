@@ -1,0 +1,45 @@
+Cuadro Sinóptico: Ramas de la Ciencia
+
+Objetivo: Reconocer las principales ramas de la ciencia (Formales, Naturales y Sociales) y su relación con la química.
+
+---
+
+## 1. Ciencias Formales
+
+**Definición Breve:** Disciplinas que estudian sistemas formales, como la lógica y las matemáticas, utilizando el razonamiento deductivo sin basarse en la observación empírica del mundo real.
+
+**Ejemplos:**
+*   Lógica
+*   Matemáticas
+*   Estadística
+*   Ciencias de la Computación
+
+**Relación con la Química:** Fundamental. La química utiliza modelos matemáticos complejos para predecir estructuras moleculares, simular reacciones químicas (química computacional) y analizar datos estadísticos de experimentos.
+
+---
+
+## 2. Ciencias Naturales
+
+**Definición Breve:** Se encargan de estudiar la naturaleza y los fenómenos naturales, basándose en la observación, la experimentación y el método científico para formular y verificar teorías.
+
+**Ejemplos:**
+*   Física
+*   Biología
+*   Geología
+*   **Química**
+
+**Destacado (Química):** La Química es una ciencia natural central, a menudo considerada un "puente" entre la Física (estudia la materia y energía a nivel fundamental) y la Biología (estudia los seres vivos, cuyos procesos son esencialmente reacciones químicas).
+
+---
+
+## 3. Ciencias Sociales
+
+**Definición Breve:** Estudian el comportamiento humano y los factores sociales y culturales, analizando cómo interactúan las personas y cómo se organizan las sociedades.
+
+**Ejemplos:**
+*   Sociología
+*   Antropología
+*   Economía
+*   Ciencia Política
+
+**Relación con la Química:** Principalmente contextual e indirecta. Incluye el análisis del impacto socioeconómico de la industria química, el desarrollo de políticas de salud pública basadas en la investigación química y el estudio histórico de la evolución de la química y su influencia en la sociedad.

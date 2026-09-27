@@ -1,0 +1,26 @@
+# Secrets / tokens
+config/api_keys.json
+config/google_oauth_client.json
+config/google_tokens/
+config/gmail_accounts.json
+config/jarvis.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local state
+config/ui_state.json
+config/__pycache__/
+**/__pycache__/
+
+# Logs / runtime
+*.log
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
